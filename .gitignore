@@ -1,0 +1,19 @@
+# Dependencies
+vendor/
+.venv/
+
+# Environment
+.env
+.env.*
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Storage uploads (keep folder structure)
+storage/courses/*
+!storage/courses/.gitkeep

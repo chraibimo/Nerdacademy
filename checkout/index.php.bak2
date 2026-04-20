@@ -1,0 +1,757 @@
+<?php
+
+if (!defined('BASE')) define('BASE', '');
+
+require_once dirname(__DIR__) . '/includes/auth.php';
+require_once dirname(__DIR__) . '/includes/db.php';
+require_once dirname(__DIR__) . '/includes/courses-repo.php';
+require_once dirname(__DIR__) . '/includes/purchases-repo.php';
+require_once dirname(__DIR__) . '/includes/stripe-api.php';
+require_once dirname(__DIR__) . '/includes/stripe-config.php';
+require_once dirname(__DIR__) . '/includes/checkout-orders-repo.php';
+
+// — 1. Resolve order_id
+$rawOrderId = trim((string) ($_GET['order_id'] ?? ''));
+
+if ($rawOrderId === '' || !preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i', $rawOrderId)) {
+    header('Location: ' . BASE . '/courses.php');
+    exit;
+}
+
+// — 2. Auth
+$currentUser = auth_current_user();
+if (!$currentUser) {
+    header('Location: ' . BASE . '/login.php?redirect=' . urlencode(BASE . '/checkout/?order_id=' . $rawOrderId));
+    exit;
+}
+$clientId = (int) $currentUser['id'];
+
+// — 3. Load order
+ensure_checkout_orders_table($mysqli);
+$order = get_checkout_order($mysqli, $rawOrderId);
+
+if (!$order) {
+    header('Location: ' . BASE . '/courses.php?checkout_expired=1');
+    exit;
+}
+
+// — 4. Security: order must belong to this user
+if ((int) $order['client_id'] !== $clientId) {
+    header('Location: ' . BASE . '/courses.php');
+    exit;
+}
+
+$courseId         = (int)    $order['course_id'];
+$originalPrice   = (float)  $order['original_amount'];
+$finalPrice      = (float)  $order['final_amount'];
+$couponCode      = (string) ($order['coupon_code'] ?? '');
+$discountPercent = (float)  $order['discount_percent'];
+$priceCents      = (int)    round($finalPrice * 100);
+
+// — 5. Already enrolled?
+ensure_purchases_table($mysqli);
+if (has_user_enrolled_course($mysqli, $clientId, $courseId)) {
+    header('Location: ' . BASE . '/course-player.php?course=' . $courseId);
+    exit;
+}
+
+// — 6. Load course
+$course = find_course_by_id($mysqli, $courseId);
+if (!$course) {
+    header('Location: ' . BASE . '/courses.php');
+    exit;
+}
+
+// — 7. Get or create PaymentIntent
+if (!empty($order['payment_intent_id']) && !empty($order['payment_intent_secret'])) {
+    $clientSecret = (string) $order['payment_intent_secret'];
+    $piId         = (string) $order['payment_intent_id'];
+} else {
+    $piParams = [
+        'amount'                     => (string) $priceCents,
+        'currency'                   => 'usd',
+        'payment_method_types[]'     => 'card',
+        'metadata[order_id]'         => $rawOrderId,
+        'metadata[course_id]'        => (string) $courseId,
+        'metadata[client_id]'        => (string) $clientId,
+        'metadata[coupon_code]'      => $couponCode,
+        'metadata[discount_percent]' => (string) $discountPercent,
+    ];
+
+    try {
+        $intent = stripe_create_payment_intent($piParams);
+    } catch (RuntimeException $e) {
+        error_log('checkout/cn: PaymentIntent error: ' . $e->getMessage());
+        header('Location: ' . BASE . '/course.php?id=' . $courseId . '&payment_error=1');
+        exit;
+    }
+
+    $clientSecret = (string) $intent['client_secret'];
+    $piId         = (string) $intent['id'];
+    attach_payment_intent_to_order($mysqli, $rawOrderId, $piId, $clientSecret);
+}
+
+// — 8. Template variables
+$courseTitle     = htmlspecialchars((string) $course['title'],     ENT_QUOTES | ENT_HTML5, 'UTF-8');
+$courseSubtitle  = htmlspecialchars((string) ($course['subtitle'] ?? ''), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+$courseDesc      = htmlspecialchars((string) ($course['description'] ?? ''), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+$courseThumb     = !empty($course['image_url']) ? htmlspecialchars((string) $course['image_url'], ENT_QUOTES | ENT_HTML5, 'UTF-8') : '';
+$courseLevel     = htmlspecialchars((string) ($course['level'] ?? ''), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+$courseDuration  = htmlspecialchars((string) ($course['duration'] ?? ''), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+$courseLessons   = (int) ($course['lessons'] ?? 0);
+$courseStudents   = (int) ($course['students'] ?? 0);
+$courseRating     = (float) ($course['rating'] ?? 0);
+$courseReviews    = (int) ($course['reviews'] ?? 0);
+$courseInstructor = htmlspecialchars((string) ($course['instructor'] ?? ''), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+$courseInstructorTitle = htmlspecialchars((string) ($course['instructor_title'] ?? ''), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+$courseOutcomes   = $course['outcomes'] ?? [];
+$originalDisplay = number_format($originalPrice, 2);
+$finalDisplay    = number_format($finalPrice, 2);
+$savingsDisplay  = $discountPercent > 0 ? number_format($originalPrice - $finalPrice, 2) : '';
+
+$jsBaseUrl   = json_encode(BASE);
+$iframeSrc   = BASE . '/checkout/cn?order_id=' . urlencode($rawOrderId);
+?><!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Checkout – <?= $courseTitle ?></title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <style>
+    /* ── Reset ─────────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    /* ── Design tokens ─────────────────────────────────────────── */
+    :root {
+      --dk-bg:       #07051a;
+      --dk-surface:  rgba(255,255,255,.065);
+      --dk-border:   rgba(255,255,255,.10);
+      --dk-text:     #eeeaff;
+      --dk-muted:    rgba(238,234,255,.5);
+      --accent:      #a78bfa;
+      --accent-glow: rgba(167,139,250,.35);
+      --indigo:      #4f46e5;
+      --indigo-mid:  #6366f1;
+      --green:       #10b981;
+      --gold:        #f59e0b;
+      --lt-bg:       #ffffff;
+      --lt-text:     #111827;
+      --lt-muted:    #6b7280;
+      --lt-border:   #e5e7eb;
+      --r-sm:        10px;
+      --r:           16px;
+      --r-lg:        22px;
+    }
+
+    html, body { height: 100%; }
+    body {
+      font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+      background: var(--dk-bg);
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ── Full-screen express-pay overlay ──────────────────────── */
+    #xoverlay {
+      position: fixed;
+      inset: 0;
+      z-index: 9998;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(7, 5, 26, 0.78);
+      backdrop-filter: blur(20px) saturate(160%);
+      -webkit-backdrop-filter: blur(20px) saturate(160%);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity .35s cubic-bezier(.4,0,.2,1);
+    }
+    #xoverlay.active {
+      opacity: 1;
+      pointer-events: all;
+    }
+    .xov-card {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 18px;
+      padding: 42px 60px 36px;
+      background: rgba(255,255,255,.07);
+      border: 1px solid rgba(255,255,255,.13);
+      border-radius: var(--r-lg);
+      backdrop-filter: blur(24px);
+      -webkit-backdrop-filter: blur(24px);
+      box-shadow: 0 32px 80px rgba(0,0,0,.5), 0 0 0 1px rgba(255,255,255,.05) inset;
+      transform: scale(.96);
+      transition: transform .35s cubic-bezier(.34,1.56,.64,1);
+    }
+    #xoverlay.active .xov-card { transform: scale(1); }
+    .xov-ring-wrap {
+      position: relative;
+      width: 54px; height: 54px;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .xov-ring-wrap::before {
+      content: '';
+      position: absolute;
+      inset: -6px;
+      border-radius: 50%;
+      background: radial-gradient(circle, var(--accent-glow), transparent 70%);
+      animation: pulseGlow 1.8s ease-in-out infinite;
+    }
+    .xov-ring {
+      width: 48px; height: 48px;
+      border: 3px solid rgba(167,139,250,.18);
+      border-top-color: var(--accent);
+      border-right-color: rgba(167,139,250,.5);
+      border-radius: 50%;
+      animation: spin .75s linear infinite;
+    }
+    .xov-card p {
+      color: var(--dk-text);
+      font-size: 1rem; font-weight: 700; letter-spacing: -.015em;
+    }
+    .xov-hint {
+      color: var(--dk-muted); font-size: .73rem; font-weight: 500;
+      display: flex; align-items: center; gap: 5px;
+    }
+    .xov-hint kbd {
+      background: rgba(255,255,255,.1);
+      border: 1px solid rgba(255,255,255,.16);
+      border-radius: 5px; padding: 2px 7px;
+      font-family: inherit; font-size: .68rem;
+      color: rgba(255,255,255,.7);
+    }
+    @keyframes pulseGlow {
+      0%, 100% { opacity: .6; transform: scale(1); }
+      50%       { opacity: 1; transform: scale(1.1); }
+    }
+
+    /* ── Two-column shell ───────────────────────────────────────── */
+    .checkout-shell {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      min-height: 100vh;
+    }
+
+    /* ═══════════════════════════════════════════════════════════
+       LEFT COLUMN — Dark aurora order summary
+    ═══════════════════════════════════════════════════════════ */
+    .col-summary {
+      position: relative;
+      background: var(--dk-bg);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    .col-summary::after {
+      content: '';
+      position: absolute;
+      right: 0; top: 8%; bottom: 8%;
+      width: 1px;
+      background: linear-gradient(to bottom,
+        transparent,
+        rgba(167,139,250,.18) 30%,
+        rgba(99,102,241,.22) 70%,
+        transparent);
+    }
+
+    /* Aurora blobs */
+    .aurora { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+    .orb {
+      position: absolute; border-radius: 50%;
+      filter: blur(100px);
+      animation: drift var(--d, 28s) ease-in-out infinite;
+      animation-delay: var(--delay, 0s);
+    }
+    .orb-a {
+      width: 560px; height: 560px; top: -180px; left: -180px;
+      background: radial-gradient(circle at 40% 40%, rgba(79,70,229,.5) 0%, transparent 60%);
+      --d: 34s;
+    }
+    .orb-b {
+      width: 400px; height: 400px; top: 35%; right: -120px;
+      background: radial-gradient(circle at 55% 40%, rgba(124,58,237,.45) 0%, transparent 60%);
+      --d: 26s; --delay: -11s;
+    }
+    .orb-c {
+      width: 340px; height: 340px; bottom: -80px; left: 25%;
+      background: radial-gradient(circle at 50% 55%, rgba(14,165,233,.38) 0%, transparent 60%);
+      --d: 38s; --delay: -20s;
+    }
+    @keyframes drift {
+      0%, 100% { transform: translate(0,0) scale(1); }
+      25%  { transform: translate(28px,-38px) scale(1.04); }
+      50%  { transform: translate(-22px,32px) scale(.96); }
+      75%  { transform: translate(38px,16px) scale(1.03); }
+    }
+
+    .s-inner {
+      position: relative; z-index: 1;
+      flex: 1; overflow-y: auto;
+      padding: 48px 52px 60px 56px;
+      display: flex; flex-direction: column;
+      animation: fadeUp .55s ease both;
+    }
+    .s-inner::-webkit-scrollbar { width: 4px; }
+    .s-inner::-webkit-scrollbar-track { background: transparent; }
+    .s-inner::-webkit-scrollbar-thumb { background: rgba(255,255,255,.12); border-radius: 99px; }
+
+    /* Brand */
+    .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 44px; }
+    .brand-mark {
+      width: 36px; height: 36px;
+      background: linear-gradient(135deg, var(--indigo), var(--accent));
+      border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      box-shadow: 0 4px 18px rgba(79,70,229,.45);
+      flex-shrink: 0;
+    }
+    .brand-mark svg { width: 17px; height: 17px; }
+    .brand-name { font-size: 1.05rem; font-weight: 800; color: var(--dk-text); letter-spacing: -.025em; }
+
+    /* Thumbnail */
+    .c-thumb {
+      width: 100%; aspect-ratio: 16/9; object-fit: cover;
+      border-radius: var(--r); border: 1px solid var(--dk-border);
+      margin-bottom: 24px;
+      box-shadow: 0 8px 32px rgba(0,0,0,.4), 0 0 0 1px rgba(255,255,255,.05) inset;
+      display: block;
+    }
+    .c-thumb-placeholder {
+      width: 100%; aspect-ratio: 16/9; border-radius: var(--r);
+      background: linear-gradient(135deg, rgba(79,70,229,.25), rgba(124,58,237,.25));
+      border: 1px solid var(--dk-border);
+      display: flex; align-items: center; justify-content: center;
+      margin-bottom: 24px;
+    }
+    .c-thumb-placeholder svg { width: 40px; height: 40px; color: var(--accent); opacity: .55; }
+
+    .c-badge {
+      display: inline-flex; align-items: center; gap: 6px;
+      background: rgba(167,139,250,.12); border: 1px solid rgba(167,139,250,.22);
+      color: var(--accent); font-size: .68rem; font-weight: 700;
+      letter-spacing: .09em; text-transform: uppercase;
+      border-radius: 99px; padding: 4px 12px;
+      margin-bottom: 10px; width: fit-content;
+    }
+    .c-title {
+      font-size: 1.45rem; font-weight: 900; color: var(--dk-text);
+      line-height: 1.22; letter-spacing: -.035em; margin-bottom: 8px;
+    }
+    .c-subtitle { font-size: .9rem; color: var(--dk-muted); line-height: 1.5; margin-bottom: 16px; }
+    .c-desc { font-size: .83rem; color: rgba(238,234,255,.6); line-height: 1.65; margin-bottom: 22px; }
+
+    /* Meta pills */
+    .meta-pills { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 24px; }
+    .mpill {
+      display: inline-flex; align-items: center; gap: 5px;
+      background: rgba(255,255,255,.06); border: 1px solid var(--dk-border);
+      color: rgba(238,234,255,.8); border-radius: 99px;
+      padding: 5px 13px; font-size: .73rem; font-weight: 600;
+      transition: background .15s, border-color .15s;
+    }
+    .mpill:hover { background: rgba(255,255,255,.1); border-color: rgba(167,139,250,.3); }
+    .mpill svg { color: var(--accent); flex-shrink: 0; }
+
+    /* Outcomes */
+    .outcomes-box {
+      background: rgba(255,255,255,.05); border: 1px solid var(--dk-border);
+      border-radius: var(--r); padding: 20px 22px; margin-bottom: 24px;
+    }
+    .outcomes-box h3 { font-size: .78rem; font-weight: 700; color: var(--dk-text); margin-bottom: 14px; }
+    .outcomes-list { list-style: none; display: flex; flex-direction: column; gap: 9px; }
+    .outcomes-list li {
+      display: flex; align-items: flex-start; gap: 9px;
+      font-size: .8rem; color: rgba(238,234,255,.72); line-height: 1.45;
+    }
+    .outcomes-list li svg { flex-shrink: 0; margin-top: 2px; color: var(--green); }
+
+    /* Instructor */
+    .instructor-row { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+    .inst-av {
+      width: 40px; height: 40px; border-radius: 50%;
+      background: linear-gradient(135deg, var(--indigo), var(--accent));
+      display: flex; align-items: center; justify-content: center;
+      color: #fff; font-size: .86rem; font-weight: 800;
+      flex-shrink: 0; box-shadow: 0 3px 12px rgba(124,58,237,.4);
+    }
+    .inst-name { font-size: .84rem; font-weight: 700; color: var(--dk-text); line-height: 1.25; }
+    .inst-title { font-size: .72rem; color: var(--dk-muted); margin-top: 2px; }
+
+    /* Rating */
+    .rating-row { display: flex; align-items: center; gap: 7px; font-size: .82rem; margin-bottom: 24px; }
+    .stars { color: var(--gold); }
+    .rating-val { font-weight: 800; color: var(--dk-text); }
+    .rating-cnt { color: var(--dk-muted); }
+
+    /* Price card */
+    .price-card {
+      background: rgba(255,255,255,.06); border: 1px solid var(--dk-border);
+      border-radius: var(--r); padding: 20px 22px; margin-bottom: 24px;
+    }
+    .price-line {
+      display: flex; justify-content: space-between; align-items: center;
+      font-size: .88rem; color: var(--dk-muted);
+    }
+    .price-line + .price-line { margin-top: 11px; }
+    .price-line.total {
+      border-top: 1px solid var(--dk-border); margin-top: 16px;
+      padding-top: 16px; color: var(--dk-text); font-weight: 700;
+    }
+    .price-line.total .amount {
+      font-size: 1.75rem; font-weight: 900; color: var(--dk-text);
+      letter-spacing: -.05em; line-height: 1;
+    }
+    .strike { text-decoration: line-through; color: rgba(238,234,255,.28); }
+    .disc-badge {
+      background: rgba(16,185,129,.14); border: 1px solid rgba(16,185,129,.24);
+      color: #34d399; font-size: .71rem; font-weight: 700;
+      padding: 3px 10px; border-radius: 99px;
+    }
+
+    /* Trust strip */
+    .trust-strip {
+      display: flex; align-items: center; gap: 8px;
+      color: var(--dk-muted); font-size: .75rem; font-weight: 500;
+      margin-top: auto; padding-top: 4px;
+    }
+    .trust-strip svg { color: var(--green); flex-shrink: 0; }
+
+    /* ═══════════════════════════════════════════════════════════
+       RIGHT COLUMN — Clean payment panel
+    ═══════════════════════════════════════════════════════════ */
+    .col-payment {
+      background: #fff;
+      background-image: radial-gradient(rgba(79,70,229,.065) 1.5px, transparent 1.5px);
+      background-size: 26px 26px;
+      display: flex; align-items: center; justify-content: center;
+      padding: 44px 40px;
+    }
+    .p-inner {
+      width: 100%; max-width: 460px;
+      display: flex; flex-direction: column;
+      min-height: 560px;
+      animation: fadeUp .55s .08s ease both;
+    }
+
+    .p-head { display: flex; align-items: flex-start; gap: 14px; margin-bottom: 20px; }
+    .p-head-icon {
+      width: 44px; height: 44px; flex-shrink: 0;
+      background: linear-gradient(135deg, #f0fdf4, #dcfce7);
+      border: 1.5px solid #bbf7d0; border-radius: 13px;
+      display: flex; align-items: center; justify-content: center;
+      box-shadow: 0 2px 10px rgba(16,185,129,.15);
+    }
+    .p-head-icon svg { color: #16a34a; }
+    .p-head h1 {
+      font-size: 1.35rem; font-weight: 900; color: var(--lt-text);
+      letter-spacing: -.035em; line-height: 1.18; margin-bottom: 3px;
+    }
+    .p-head p { font-size: .78rem; color: var(--lt-muted); font-weight: 500; }
+
+    /* Amount chip */
+    .amount-chip {
+      display: flex; align-items: center; justify-content: space-between;
+      background: linear-gradient(135deg, #f5f3ff, #ede9fe);
+      border: 1.5px solid #ddd6fe; border-radius: var(--r-sm);
+      padding: 13px 18px; margin-bottom: 20px; gap: 10px;
+    }
+    .ac-left { flex: 1; min-width: 0; }
+    .ac-label { font-size: .72rem; font-weight: 600; color: #7c3aed; text-transform: uppercase; letter-spacing: .07em; }
+    .ac-title {
+      font-size: .86rem; font-weight: 700; color: var(--lt-text);
+      margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .ac-amount {
+      font-size: 1.35rem; font-weight: 900; color: var(--indigo);
+      letter-spacing: -.04em; white-space: nowrap; flex-shrink: 0;
+    }
+
+    /* Payment iframe */
+    .pay-frame {
+      flex: 1; width: 100%; min-height: 460px;
+      border: none; border-radius: var(--r); display: block;
+    }
+
+    /* Footer */
+    .pay-footer { margin-top: 14px; display: flex; flex-direction: column; align-items: center; gap: 8px; }
+    .pay-footer-row {
+      display: flex; align-items: center; gap: 7px;
+      color: #9ca3af; font-size: .71rem; font-weight: 500;
+    }
+    .pay-footer-row svg { flex-shrink: 0; }
+    .pay-methods {
+      display: flex; align-items: center; gap: 8px;
+      flex-wrap: wrap; justify-content: center;
+    }
+    .pm-badge {
+      padding: 3px 8px; border: 1px solid #e5e7eb; border-radius: 5px;
+      font-size: .65rem; font-weight: 700; color: #9ca3af;
+      letter-spacing: .04em;
+    }
+
+    /* ── Animations ─────────────────────────────────────────────── */
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(16px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    /* ── Responsive ─────────────────────────────────────────────── */
+    @media (max-width: 920px) {
+      .checkout-shell { grid-template-columns: 1fr; }
+      .col-summary::after { display: none; }
+      .s-inner { padding: 32px 24px 30px; }
+      .col-payment { padding: 28px 20px 48px; background-size: 22px 22px; }
+      .p-inner { min-height: auto; }
+      .c-title { font-size: 1.2rem; }
+    }
+    @media (max-width: 480px) {
+      .s-inner { padding: 24px 16px; }
+      .col-payment { padding: 20px 12px 40px; }
+      .p-head h1 { font-size: 1.1rem; }
+      .price-line.total .amount { font-size: 1.4rem; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── Full-screen express-pay overlay ─────────────────────────── -->
+<div id="xoverlay" aria-hidden="true">
+  <div class="xov-card">
+    <div class="xov-ring-wrap">
+      <div class="xov-ring"></div>
+    </div>
+    <p>Opening payment sheet&hellip;</p>
+    <span class="xov-hint">Press <kbd>Esc</kbd> to cancel</span>
+  </div>
+</div>
+
+<div class="checkout-shell">
+
+  <!-- ── LEFT: Dark order summary ──────────────────────────────── -->
+  <aside class="col-summary">
+
+    <div class="aurora" aria-hidden="true">
+      <div class="orb orb-a"></div>
+      <div class="orb orb-b"></div>
+      <div class="orb orb-c"></div>
+    </div>
+
+    <div class="s-inner">
+
+      <div class="brand">
+        <div class="brand-mark">
+          <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>
+          </svg>
+        </div>
+        <span class="brand-name">NerdAcademy</span>
+      </div>
+
+      <?php if ($courseThumb): ?>
+        <img src="<?= $courseThumb ?>" alt="<?= $courseTitle ?>" class="c-thumb">
+      <?php else: ?>
+        <div class="c-thumb-placeholder">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>
+          </svg>
+        </div>
+      <?php endif; ?>
+
+      <div class="c-badge">
+        <svg width="8" height="8" viewBox="0 0 8 8" fill="currentColor"><circle cx="4" cy="4" r="4"/></svg>
+        Course enrollment
+      </div>
+      <h2 class="c-title"><?= $courseTitle ?></h2>
+
+      <?php if ($courseSubtitle): ?>
+        <p class="c-subtitle"><?= $courseSubtitle ?></p>
+      <?php endif; ?>
+
+      <?php if ($courseDesc): ?>
+        <p class="c-desc"><?= $courseDesc ?></p>
+      <?php endif; ?>
+
+      <div class="meta-pills">
+        <?php if ($courseLevel): ?>
+        <span class="mpill">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 20h4V10H2z"/><path d="M10 20h4V4h-4z"/><path d="M18 20h4v-8h-4z"/></svg>
+          <?= $courseLevel ?>
+        </span>
+        <?php endif; ?>
+        <?php if ($courseDuration): ?>
+        <span class="mpill">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+          <?= $courseDuration ?>
+        </span>
+        <?php endif; ?>
+        <?php if ($courseLessons > 0): ?>
+        <span class="mpill">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+          <?= $courseLessons ?> lessons
+        </span>
+        <?php endif; ?>
+        <?php if ($courseStudents > 0): ?>
+        <span class="mpill">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+          <?= number_format($courseStudents) ?> students
+        </span>
+        <?php endif; ?>
+      </div>
+
+      <?php if ($courseInstructor): ?>
+      <div class="instructor-row">
+        <div class="inst-av"><?= strtoupper(mb_substr($courseInstructor, 0, 1)) ?></div>
+        <div>
+          <div class="inst-name"><?= $courseInstructor ?></div>
+          <?php if ($courseInstructorTitle): ?>
+            <div class="inst-title"><?= $courseInstructorTitle ?></div>
+          <?php endif; ?>
+        </div>
+      </div>
+      <?php endif; ?>
+
+      <?php if ($courseRating > 0): ?>
+      <div class="rating-row">
+        <span class="stars">&#9733;</span>
+        <span class="rating-val"><?= number_format($courseRating, 1) ?></span>
+        <?php if ($courseReviews > 0): ?>
+          <span class="rating-cnt">(<?= number_format($courseReviews) ?> reviews)</span>
+        <?php endif; ?>
+      </div>
+      <?php endif; ?>
+
+      <?php if (!empty($courseOutcomes)): ?>
+      <div class="outcomes-box">
+        <h3>What you&rsquo;ll learn</h3>
+        <ul class="outcomes-list">
+          <?php foreach (array_slice($courseOutcomes, 0, 6) as $outcome): ?>
+          <li>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+            <?= htmlspecialchars((string)$outcome, ENT_QUOTES|ENT_HTML5, 'UTF-8') ?>
+          </li>
+          <?php endforeach; ?>
+        </ul>
+      </div>
+      <?php endif; ?>
+
+      <div class="price-card">
+        <?php if ($discountPercent > 0): ?>
+        <div class="price-line">
+          <span>Original price</span>
+          <span class="strike">$<?= $originalDisplay ?></span>
+        </div>
+        <div class="price-line">
+          <span>Discount (<?= (int)$discountPercent ?>% off)</span>
+          <span class="disc-badge">&minus;$<?= $savingsDisplay ?></span>
+        </div>
+        <?php endif; ?>
+        <div class="price-line total">
+          <span>Total due today</span>
+          <span class="amount">$<?= $finalDisplay ?></span>
+        </div>
+      </div>
+
+      <div class="trust-strip">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+        </svg>
+        30-day money-back guarantee &nbsp;&middot;&nbsp; Lifetime access
+      </div>
+
+    </div><!-- /s-inner -->
+  </aside>
+
+  <!-- ── RIGHT: Payment ────────────────────────────────────────── -->
+  <main class="col-payment">
+    <div class="p-inner">
+
+      <div class="p-head">
+        <div class="p-head-icon">
+          <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+          </svg>
+        </div>
+        <div>
+          <h1>Complete your order</h1>
+          <p>256-bit SSL &amp; secured by Stripe</p>
+        </div>
+      </div>
+
+      <div class="amount-chip">
+        <div class="ac-left">
+          <div class="ac-label">Enrolling in</div>
+          <div class="ac-title"><?= $courseTitle ?></div>
+        </div>
+        <div class="ac-amount">$<?= $finalDisplay ?></div>
+      </div>
+
+      <iframe
+        src="<?= htmlspecialchars($iframeSrc, ENT_QUOTES|ENT_HTML5, 'UTF-8') ?>"
+        class="pay-frame"
+        id="payment-iframe"
+        allow="payment"
+        loading="eager"
+        title="Payment form"
+      ></iframe>
+
+      <div class="pay-footer">
+        <div class="pay-footer-row">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          Powered by Stripe &nbsp;&middot;&nbsp; Your payment info is always encrypted
+        </div>
+        <div class="pay-methods">
+          <span class="pm-badge">VISA</span>
+          <span class="pm-badge">MC</span>
+          <span class="pm-badge">AMEX</span>
+          <span class="pm-badge">Apple Pay</span>
+          <span class="pm-badge">G Pay</span>
+        </div>
+      </div>
+
+    </div><!-- /p-inner -->
+  </main>
+
+</div><!-- /checkout-shell -->
+
+<script>
+(function () {
+  'use strict';
+  var BASE_URL = <?= $jsBaseUrl ?>;
+  var overlay  = document.getElementById('xoverlay');
+
+  function showOverlay() {
+    overlay.classList.add('active');
+    overlay.removeAttribute('aria-hidden');
+  }
+  function hideOverlay() {
+    overlay.classList.remove('active');
+    overlay.setAttribute('aria-hidden', 'true');
+  }
+
+  window.addEventListener('message', function (e) {
+    if (!e.data || typeof e.data !== 'object') return;
+    switch (e.data.type) {
+      case 'express_pay_open':
+        showOverlay();
+        break;
+      case 'express_pay_close':
+        hideOverlay();
+        break;
+      case 'checkout_complete':
+        hideOverlay();
+        window.location.href = e.data.redirect_url || (BASE_URL + '/my-courses');
+        break;
+    }
+  });
+
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') hideOverlay();
+  });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+Options -Indexes
+Options +FollowSymLinks
+RewriteEngine On
+
+# Clean URL: /checkout/cn  →  /checkout/cn.php  (pass query string through)
+RewriteRule ^checkout/cn$  /checkout/cn.php  [L,QSA]
+
+# Serve existing files and directories directly
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d

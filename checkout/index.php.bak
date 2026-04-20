@@ -1,0 +1,1032 @@
+<?php
+
+if (!defined('BASE')) define('BASE', '');
+
+require_once dirname(__DIR__) . '/includes/auth.php';
+require_once dirname(__DIR__) . '/includes/db.php';
+require_once dirname(__DIR__) . '/includes/courses-repo.php';
+require_once dirname(__DIR__) . '/includes/purchases-repo.php';
+require_once dirname(__DIR__) . '/includes/stripe-api.php';
+require_once dirname(__DIR__) . '/includes/stripe-config.php';
+require_once dirname(__DIR__) . '/includes/checkout-orders-repo.php';
+
+// â”€â”€ 1. Resolve order_id â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+$rawOrderId = trim((string) ($_GET['order_id'] ?? ''));
+
+if ($rawOrderId === '' || !preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i', $rawOrderId)) {
+    header('Location: ' . BASE . '/courses.php');
+    exit;
+}
+
+// â”€â”€ 2. Auth â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+$currentUser = auth_current_user();
+if (!$currentUser) {
+    header('Location: ' . BASE . '/login.php?redirect=' . urlencode(BASE . '/checkout/?order_id=' . $rawOrderId));
+    exit;
+}
+$clientId = (int) $currentUser['id'];
+
+// â”€â”€ 3. Load order â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+ensure_checkout_orders_table($mysqli);
+$order = get_checkout_order($mysqli, $rawOrderId);
+
+if (!$order) {
+    // Order not found, expired, or already completed â€” bounce to courses
+    header('Location: ' . BASE . '/courses.php?checkout_expired=1');
+    exit;
+}
+
+// â”€â”€ 4. Security: order must belong to this user â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+if ((int) $order['client_id'] !== $clientId) {
+    header('Location: ' . BASE . '/courses.php');
+    exit;
+}
+
+$courseId        = (int)    $order['course_id'];
+$originalPrice   = (float)  $order['original_amount'];
+$finalPrice      = (float)  $order['final_amount'];
+$couponCode      = (string) ($order['coupon_code'] ?? '');
+$discountPercent = (float)  $order['discount_percent'];
+$priceCents      = (int)    round($finalPrice * 100);
+
+// â”€â”€ 5. Already enrolled? â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+ensure_purchases_table($mysqli);
+if (has_user_enrolled_course($mysqli, $clientId, $courseId)) {
+    header('Location: ' . BASE . '/course-player.php?course=' . $courseId);
+    exit;
+}
+
+// â”€â”€ 6. Load course â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+$course = find_course_by_id($mysqli, $courseId);
+if (!$course) {
+    header('Location: ' . BASE . '/courses.php');
+    exit;
+}
+
+// â”€â”€ 7. Get or create PaymentIntent â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+if (!empty($order['payment_intent_id']) && !empty($order['payment_intent_secret'])) {
+    // Reuse the existing PaymentIntent (idempotent page reload)
+    $clientSecret = (string) $order['payment_intent_secret'];
+    $piId         = (string) $order['payment_intent_id'];
+} else {
+    $piParams = [
+        'amount'                     => (string) $priceCents,
+        'currency'                   => 'usd',
+        'payment_method_types[]'     => 'card',
+        'metadata[order_id]'         => $rawOrderId,
+        'metadata[course_id]'        => (string) $courseId,
+        'metadata[client_id]'        => (string) $clientId,
+        'metadata[coupon_code]'      => $couponCode,
+        'metadata[discount_percent]' => (string) $discountPercent,
+    ];
+
+    try {
+        $intent = stripe_create_payment_intent($piParams);
+    } catch (RuntimeException $e) {
+        error_log('checkout/cn: PaymentIntent error: ' . $e->getMessage());
+        header('Location: ' . BASE . '/course.php?id=' . $courseId . '&payment_error=1');
+        exit;
+    }
+
+    $clientSecret = (string) $intent['client_secret'];
+    $piId         = (string) $intent['id'];
+    attach_payment_intent_to_order($mysqli, $rawOrderId, $piId, $clientSecret);
+}
+
+// â”€â”€ 8. Template variables â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+$courseTitle     = htmlspecialchars((string) $course['title'],     ENT_QUOTES | ENT_HTML5, 'UTF-8');
+$courseSubtitle  = htmlspecialchars((string) ($course['subtitle'] ?? ''), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+$courseDesc      = htmlspecialchars((string) ($course['description'] ?? ''), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+$courseThumb     = !empty($course['image_url']) ? htmlspecialchars((string) $course['image_url'], ENT_QUOTES | ENT_HTML5, 'UTF-8') : '';
+$courseLevel     = htmlspecialchars((string) ($course['level'] ?? ''), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+$courseDuration  = htmlspecialchars((string) ($course['duration'] ?? ''), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+$courseLessons   = (int) ($course['lessons'] ?? 0);
+$courseStudents   = (int) ($course['students'] ?? 0);
+$courseRating     = (float) ($course['rating'] ?? 0);
+$courseReviews    = (int) ($course['reviews'] ?? 0);
+$courseInstructor = htmlspecialchars((string) ($course['instructor'] ?? ''), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+$courseInstructorTitle = htmlspecialchars((string) ($course['instructor_title'] ?? ''), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+$courseOutcomes   = $course['outcomes'] ?? [];
+$originalDisplay = number_format($originalPrice, 2);
+$finalDisplay    = number_format($finalPrice, 2);
+$savingsDisplay  = $discountPercent > 0 ? number_format($originalPrice - $finalPrice, 2) : '';
+
+$jsBaseUrl        = json_encode(BASE);
+
+$iframeSrc = BASE . '/checkout/cn?order_id=' . urlencode($rawOrderId);
+?><!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Checkout â€“ <?= $courseTitle ?></title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --indigo:       #4f46e5;
+      --indigo-light: #6366f1;
+      --radius:       14px;
+      --border:       #e5e7eb;
+      --text:         #111827;
+      --muted:        #6b7280;
+      --bg-left:      #f8f7ff;
+      --bg-input:     #f9fafb;
+    }
+
+    html, body { height: 100%; }
+    body {
+      font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+      background: #fff;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* â”€â”€ Two-column shell â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+    .checkout-shell {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      min-height: 100vh;
+    }
+
+    /* â”€â”€ LEFT: order summary â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+    .summary-col {
+      background: var(--bg-left);
+      padding: 56px 48px 56px 56px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 44px;
+    }
+    .brand-icon {
+      width: 34px; height: 34px;
+      background: linear-gradient(135deg, var(--indigo), var(--indigo-light));
+      border-radius: 9px;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .brand-icon svg { width: 18px; height: 18px; }
+    .brand-name {
+      font-size: 1.05rem;
+      font-weight: 800;
+      color: var(--text);
+      letter-spacing: -.02em;
+    }
+
+    .course-thumb {
+      width: 100%;
+      aspect-ratio: 16/9;
+      object-fit: cover;
+      border-radius: var(--radius);
+      margin-bottom: 24px;
+      background: #e0e7ff;
+    }
+    .course-thumb-placeholder {
+      width: 100%;
+      aspect-ratio: 16/9;
+      border-radius: var(--radius);
+      background: linear-gradient(135deg, #e0e7ff, #c7d2fe);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 24px;
+    }
+    .course-thumb-placeholder svg { width: 40px; height: 40px; color: var(--indigo); opacity: .5; }
+
+    .course-label {
+      font-size: .7rem;
+      font-weight: 700;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      color: var(--indigo);
+      margin-bottom: 8px;
+    }
+
+    .course-title {
+      font-size: 1.35rem;
+      font-weight: 800;
+      color: var(--text);
+      line-height: 1.3;
+      margin-bottom: 24px;
+      letter-spacing: -.02em;
+    }
+
+    .price-box {
+      background: #fff;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 18px 20px;
+    }
+    .price-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: .9rem;
+      color: var(--muted);
+    }
+    .price-row + .price-row { margin-top: 10px; }
+    .price-row.total {
+      border-top: 1px solid var(--border);
+      margin-top: 14px;
+      padding-top: 14px;
+      font-size: 1.1rem;
+      font-weight: 800;
+      color: var(--text);
+    }
+    .price-row .strike { text-decoration: line-through; color: #9ca3af; }
+    .badge-discount {
+      background: #ecfdf5;
+      color: #059669;
+      font-size: .72rem;
+      font-weight: 700;
+      padding: 2px 8px;
+      border-radius: 99px;
+      letter-spacing: .02em;
+    }
+    .trust-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 22px;
+      color: var(--muted);
+      font-size: .78rem;
+      font-weight: 500;
+    }
+    .trust-row svg { flex-shrink: 0; color: #10b981; }
+
+    /* â”€â”€ RIGHT: billing form â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+    .billing-col {
+      padding: 56px 56px 56px 48px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    }
+
+    .billing-heading {
+      font-size: 1.45rem;
+      font-weight: 800;
+      color: var(--text);
+      letter-spacing: -.025em;
+      margin-bottom: 4px;
+    }
+    .billing-sub {
+      font-size: .88rem;
+      color: var(--muted);
+      margin-bottom: 30px;
+    }
+
+    .field { margin-bottom: 16px; }
+    .field-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+      margin-bottom: 16px;
+    }
+
+    label {
+      display: block;
+      font-size: .78rem;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 7px;
+      letter-spacing: .01em;
+    }
+
+    .inp {
+      width: 100%;
+      padding: 12px 14px;
+      border: 1.5px solid var(--border);
+      border-radius: 10px;
+      background: var(--bg-input);
+      font-family: inherit;
+      font-size: .9rem;
+      color: var(--text);
+      outline: none;
+      transition: border-color .15s, box-shadow .15s;
+    }
+    .inp::placeholder { color: #c4c8d0; }
+    .inp:focus {
+      border-color: var(--indigo);
+      box-shadow: 0 0 0 3px rgba(79,70,229,.1);
+      background: #fff;
+    }
+    .inp.invalid {
+      border-color: #ef4444;
+      box-shadow: 0 0 0 3px rgba(239,68,68,.08);
+    }
+
+    .form-error {
+      color: #dc2626;
+      font-size: .8rem;
+      font-weight: 500;
+      margin-bottom: 10px;
+      min-height: 1.1rem;
+    }
+
+    .btn-pay-now {
+      width: 100%;
+      padding: 15px;
+      background: linear-gradient(135deg, #4f46e5 0%, #6366f1 100%);
+      color: #fff;
+      font-size: .97rem;
+      font-weight: 700;
+      font-family: inherit;
+      border: none;
+      border-radius: 11px;
+      cursor: pointer;
+      transition: opacity .15s, transform .1s;
+      letter-spacing: .01em;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      margin-top: 4px;
+    }
+    .btn-pay-now:hover { opacity: .92; transform: translateY(-1px); }
+    .btn-pay-now:active { transform: translateY(0); }
+
+    .secure-row {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      margin-top: 14px;
+      font-size: .75rem;
+      color: #9ca3af;
+      font-weight: 500;
+    }
+    .secure-row svg { flex-shrink: 0; }
+
+    /* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+       PAYMENT MODAL
+    â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 12, 40, .55);
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
+      z-index: 1000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity .22s ease;
+    }
+    .modal-overlay.open {
+      opacity: 1;
+      pointer-events: all;
+    }
+
+    .modal-box {
+      background: #fff;
+      border-radius: 20px;
+      width: 100%;
+      max-width: 480px;
+      padding: 36px 36px 32px;
+      box-shadow: 0 24px 60px rgba(0,0,0,.2);
+      transform: translateY(24px) scale(.97);
+      transition: transform .25s cubic-bezier(.34,1.36,.64,1), opacity .22s ease;
+      opacity: 0;
+      position: relative;
+    }
+    .modal-overlay.open .modal-box {
+      transform: translateY(0) scale(1);
+      opacity: 1;
+    }
+
+    .modal-close {
+      position: absolute;
+      top: 16px;
+      right: 16px;
+      width: 32px; height: 32px;
+      border: none;
+      background: #f3f4f6;
+      border-radius: 50%;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #6b7280;
+      transition: background .15s, color .15s;
+    }
+    .modal-close:hover { background: #e5e7eb; color: #111827; }
+
+    .modal-summary {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      background: var(--bg-left);
+      border-radius: 12px;
+      padding: 14px 16px;
+      margin-bottom: 24px;
+    }
+    .modal-summary-thumb {
+      width: 52px;
+      height: 52px;
+      border-radius: 8px;
+      object-fit: cover;
+      background: #e0e7ff;
+      flex-shrink: 0;
+    }
+    .modal-summary-thumb-placeholder {
+      width: 52px; height: 52px;
+      border-radius: 8px;
+      background: linear-gradient(135deg, #e0e7ff, #c7d2fe);
+      flex-shrink: 0;
+    }
+    .modal-summary-title {
+      font-size: .88rem;
+      font-weight: 700;
+      color: var(--text);
+      flex: 1;
+      line-height: 1.3;
+    }
+    .modal-summary-price {
+      font-size: 1rem;
+      font-weight: 800;
+      color: var(--indigo);
+      white-space: nowrap;
+    }
+
+    .modal-heading {
+      font-size: 1.1rem;
+      font-weight: 800;
+      color: var(--text);
+      margin-bottom: 18px;
+      letter-spacing: -.02em;
+    }
+
+    /* Express */
+    .express-label {
+      text-align: center;
+      font-size: .7rem;
+      font-weight: 700;
+      color: #9ca3af;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      margin-bottom: 10px;
+    }
+    .express-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+    .express-row.single { grid-template-columns: 1fr; }
+
+    .btn-express {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      height: 48px;
+      border: 1.5px solid #d1d5db;
+      border-radius: 10px;
+      font-size: .86rem;
+      font-weight: 600;
+      font-family: inherit;
+      cursor: pointer;
+      background: #000;
+      color: #fff;
+      transition: opacity .15s;
+    }
+    .btn-express:hover { opacity: .85; }
+
+    .or-divider {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin: 0 0 20px;
+    }
+    .or-divider::before,
+    .or-divider::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+    .or-divider span {
+      font-size: .7rem;
+      font-weight: 700;
+      color: #9ca3af;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
+    /* Stripe elements */
+    .modal-field { margin-bottom: 14px; }
+    .modal-field label { margin-bottom: 6px; }
+    .stripe-el {
+      border: 1.5px solid var(--border);
+      border-radius: 10px;
+      padding: 13px 14px;
+      background: var(--bg-input);
+      transition: border-color .15s, box-shadow .15s;
+    }
+    .stripe-el.focused  { border-color: var(--indigo); box-shadow: 0 0 0 3px rgba(79,70,229,.1); }
+    .stripe-el.invalid  { border-color: #ef4444; box-shadow: 0 0 0 3px rgba(239,68,68,.08); }
+
+    .modal-field-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    .error-msg {
+      min-height: 1.1rem;
+      color: #dc2626;
+      font-size: .8rem;
+      margin-bottom: 10px;
+      font-weight: 500;
+    }
+
+    .btn-pay {
+      width: 100%;
+      padding: 14px;
+      background: linear-gradient(135deg, #4f46e5 0%, #6366f1 100%);
+      color: #fff;
+      font-size: .95rem;
+      font-weight: 700;
+      font-family: inherit;
+      border: none;
+      border-radius: 11px;
+      cursor: pointer;
+      transition: opacity .15s, transform .1s;
+      letter-spacing: .01em;
+    }
+    .btn-pay:hover:not(:disabled) { opacity: .92; transform: translateY(-1px); }
+    .btn-pay:active:not(:disabled) { transform: translateY(0); }
+    .btn-pay:disabled { opacity: .55; cursor: not-allowed; transform: none; }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spinner {
+      display: inline-block;
+      width: 13px; height: 13px;
+      border: 2px solid rgba(255,255,255,.35);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin .5s linear infinite;
+      vertical-align: middle;
+      margin-right: 6px;
+    }
+
+    .modal-secure {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      margin-top: 12px;
+      font-size: .72rem;
+      color: #9ca3af;
+      font-weight: 500;
+    }
+    .modal-secure svg { flex-shrink: 0; }
+
+    /* â”€â”€ Responsive â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+    @media (max-width: 860px) {
+      .checkout-shell { grid-template-columns: 1fr; }
+      .summary-col  { padding: 40px 28px 32px; }
+      .billing-col  { padding: 32px 28px 48px; }
+      .course-title { font-size: 1.15rem; }
+    }
+    @media (max-width: 480px) {
+      .summary-col, .billing-col { padding: 28px 20px; }
+      .field-row { grid-template-columns: 1fr; }
+      .modal-box { padding: 28px 20px 24px; }
+      .modal-field-row { grid-template-columns: 1fr; }
+      .express-row { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+<div class="checkout-shell">
+
+  <!-- â”€â”€ LEFT: Order summary â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ -->
+  <div class="summary-col">
+
+    <div class="brand">
+      <div class="brand-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>
+        </svg>
+      </div>
+      <span class="brand-name">NerdAcademy</span>
+    </div>
+
+    <?php if ($courseThumb): ?>
+      <img src="<?= $courseThumb ?>" alt="<?= $courseTitle ?>" class="course-thumb">
+    <?php else: ?>
+      <div class="course-thumb-placeholder">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>
+        </svg>
+      </div>
+    <?php endif; ?>
+
+    <p class="course-label">Course enrollment</p>
+    <h2 class="course-title"><?= $courseTitle ?></h2>
+
+    <div class="price-box">
+      <?php if ($discountPercent > 0): ?>
+      <div class="price-row">
+        <span>Original price</span>
+        <span class="strike">$<?= $originalDisplay ?></span>
+      </div>
+      <div class="price-row">
+        <span>Discount (<?= (int)$discountPercent ?>% off)</span>
+        <span class="badge-discount">âˆ’$<?= $savingsDisplay ?></span>
+      </div>
+      <?php endif; ?>
+      <div class="price-row total">
+        <span>Total due today</span>
+        <span>$<?= $finalDisplay ?></span>
+      </div>
+    </div>
+
+    <div class="trust-row">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+      </svg>
+      30-day money-back guarantee &nbsp;Â·&nbsp; Lifetime access
+    </div>
+
+  </div><!-- /summary-col -->
+
+  <!-- â”€â”€ RIGHT: Billing information form â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ -->
+  <div class="billing-col">
+
+    <h1 class="billing-heading">Customer Information</h1>
+    <p class="billing-sub">Enter your details below to complete your enrollment.</p>
+
+    <div class="field-row">
+      <div>
+        <label for="bf-first">First Name <span style="color:#ef4444">*</span></label>
+        <input class="inp" id="bf-first" type="text" placeholder="Jane" value="<?= $userFirstName ?>" autocomplete="given-name">
+      </div>
+      <div>
+        <label for="bf-last">Last Name <span style="color:#ef4444">*</span></label>
+        <input class="inp" id="bf-last" type="text" placeholder="Smith" value="<?= $userLastName ?>" autocomplete="family-name">
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="bf-address">Address <span style="color:#ef4444">*</span></label>
+      <input class="inp" id="bf-address" type="text" placeholder="123 Main St" autocomplete="street-address">
+    </div>
+
+    <div class="field-row">
+      <div>
+        <label for="bf-city">City <span style="color:#ef4444">*</span></label>
+        <input class="inp" id="bf-city" type="text" placeholder="New York" autocomplete="address-level2">
+      </div>
+      <div>
+        <label for="bf-postal">Postal Code <span style="color:#ef4444">*</span></label>
+        <input class="inp" id="bf-postal" type="text" placeholder="10001" autocomplete="postal-code">
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="bf-phone">Phone <span style="color:#ef4444">*</span></label>
+      <input class="inp" id="bf-phone" type="tel" placeholder="+1 555 000 0000" value="<?= $userPhone ?>" autocomplete="tel">
+    </div>
+
+    <div class="form-error" id="billing-error"></div>
+
+    <button type="button" class="btn-pay-now" id="open-payment-btn">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/>
+      </svg>
+      Pay $<?= $finalDisplay ?> now
+    </button>
+
+    <div class="secure-row">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+      </svg>
+      Secure payment &nbsp;Â·&nbsp; Your information is safe with us
+    </div>
+    <p style="text-align:center;font-size:.72rem;color:#9ca3af;margin-top:4px;">No additional taxes are charged unless required by law.</p>
+
+  </div><!-- /billing-col -->
+
+</div><!-- /checkout-shell -->
+
+<!-- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+     PAYMENT MODAL
+â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• -->
+<div class="modal-overlay" id="payment-modal" role="dialog" aria-modal="true" aria-label="Complete payment">
+  <div class="modal-box" id="modal-box">
+
+    <button class="modal-close" id="modal-close-btn" aria-label="Close payment">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+        <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+      </svg>
+    </button>
+
+    <!-- Mini order summary inside modal -->
+    <div class="modal-summary">
+      <?php if ($courseThumb): ?>
+        <img src="<?= $courseThumb ?>" alt="" class="modal-summary-thumb">
+      <?php else: ?>
+        <div class="modal-summary-thumb-placeholder"></div>
+      <?php endif; ?>
+      <div class="modal-summary-title"><?= $courseTitle ?></div>
+      <div class="modal-summary-price">$<?= $finalDisplay ?></div>
+    </div>
+
+    <p class="modal-heading">Complete payment</p>
+
+    <!-- Express checkout (Google Pay / Apple Pay) -->
+    <p class="express-label">Express checkout</p>
+    <div class="express-row" id="express-row">
+      <button type="button" class="btn-express" id="btn-apay" aria-label="Pay with Apple Pay">
+        <svg width="18" height="18" viewBox="0 0 814 1000" fill="white" aria-hidden="true">
+          <path d="M788.1 340.9c-5.8 4.5-108.2 62.2-108.2 190.5 0 148.4 130.3 200.9 134.2 202.2-.6 3.2-20.7 71.9-68.7 141.9-42.8 61.6-87.5 123.1-155.5 123.1s-85.5-39.5-164-39.5c-76 0-103.7 40.8-165.9 40.8s-105-57.8-155.5-127.4C46 790.8 0 663.5 0 541.8c0-207.4 134.4-317 267.2-317 70.5 0 128.9 46.5 168.4 46.5 37.5 0 105.5-50.5 185.5-50.5 29.4 0 108.4 2.6 168.4 74.5zm-244.7-175.3c35.2-43 60.5-103.3 60.5-163.6 0-8.3-.6-16.6-2-24.9-57.3 2.2-124.1 38.4-164.4 86.3-31.2 36.7-61.8 97-61.8 158.1 0 9 1.3 18 2 20.7 3.5.6 9 1.3 14.5 1.3 51.4 0 113.8-34.7 151.2-77.9z"/>
+        </svg>
+        <span style="color:#fff;font-weight:500;font-size:.92rem;letter-spacing:.01em">Pay</span>
+      </button>
+      <button type="button" class="btn-express" id="btn-gpay" aria-label="Pay with Google Pay">
+        <!-- Official Google G mark -->
+        <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 48 48" aria-hidden="true">
+          <path fill="#4285F4" d="M47.532 24.5528C47.532 22.9214 47.3997 21.2811 47.1175 19.6761H24.48V28.9181H37.4434C36.9055 31.8988 35.177 34.5356 32.6461 36.2111V42.1608H40.3801C44.9217 38.0088 47.532 31.8312 47.532 24.5528Z"/>
+          <path fill="#34A853" d="M24.48 48.0016C30.9529 48.0016 36.4116 45.8764 40.3888 42.1608L32.6549 36.2111C30.5031 37.675 27.7252 38.5039 24.4888 38.5039C18.2275 38.5039 12.9187 34.2798 11.0139 28.6006H3.03296V34.7272C7.10718 42.8493 15.4056 48.0016 24.48 48.0016Z"/>
+          <path fill="#FBBC04" d="M11.0051 28.6006C9.99973 25.6199 9.99973 22.3922 11.0051 19.4115V13.2849H3.03298C-0.371021 20.0138 -0.371021 28.0016 3.03298 34.7272L11.0051 28.6006Z"/>
+          <path fill="#EA4335" d="M24.48 9.49932C27.9016 9.44641 31.2086 10.7339 33.6866 13.0973L40.5387 6.24523C36.2 2.17101 30.4414 -0.068932 24.48 0.00161733C15.4055 0.00161733 7.10718 5.14323 3.03296 13.2849L11.005 19.4115C12.901 13.7235 18.2187 9.49932 24.48 9.49932Z"/>
+        </svg>
+        <span style="color:#fff;font-weight:500;font-size:.92rem;letter-spacing:.01em;font-family:'Google Sans','Roboto',Arial,sans-serif">Pay</span>
+      </button>
+    </div>
+
+    <div class="or-divider"><span>Or pay by card</span></div>
+
+    <div class="modal-field">
+      <label>Card number</label>
+      <div id="card-number" class="stripe-el" aria-label="Card number"></div>
+    </div>
+    <div class="modal-field-row">
+      <div>
+        <label>Expiry date</label>
+        <div id="card-expiry" class="stripe-el" aria-label="Expiry date"></div>
+      </div>
+      <div>
+        <label>CVC</label>
+        <div id="card-cvc" class="stripe-el" aria-label="CVC"></div>
+      </div>
+    </div>
+
+    <div id="card-errors" class="error-msg" role="alert" aria-live="assertive"></div>
+
+    <button type="button" id="pay-btn" class="btn-pay">
+      Pay $<?= $finalDisplay ?> now
+    </button>
+
+    <div class="modal-secure">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+      </svg>
+      Secured by Stripe. Your payment info is never stored.
+    </div>
+
+  </div><!-- /modal-box -->
+</div><!-- /modal-overlay -->
+
+<script src="https://js.stripe.com/v3/"></script>
+<script>
+(function () {
+  'use strict';
+
+  var PK            = <?= $jsPublishableKey ?>;
+  var CLIENT_SECRET = <?= $jsClientSecret ?>;
+  var AMOUNT        = <?= $jsAmount ?>;
+  var CURRENCY      = <?= $jsCurrency ?>;
+  var COURSE_TITLE  = <?= $jsCourseTitle ?>;
+  var COURSE_ID     = <?= $jsCourseId ?>;
+  var ORDER_ID      = <?= $jsOrderId ?>;
+  var BASE_URL      = <?= $jsBaseUrl ?>;
+
+  // â”€â”€ Billing form validation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  var fields = {
+    first:   document.getElementById('bf-first'),
+    last:    document.getElementById('bf-last'),
+    address: document.getElementById('bf-address'),
+    city:    document.getElementById('bf-city'),
+    postal:  document.getElementById('bf-postal'),
+    phone:   document.getElementById('bf-phone')
+  };
+  var billingError = document.getElementById('billing-error');
+
+  function validateBilling() {
+    billingError.textContent = '';
+    var missing = [];
+    Object.keys(fields).forEach(function (k) {
+      var el = fields[k];
+      if (el.value.trim() === '') {
+        el.classList.add('invalid');
+        missing.push(k);
+      } else {
+        el.classList.remove('invalid');
+      }
+    });
+    if (missing.length) {
+      billingError.textContent = 'Please fill in all required fields.';
+      fields[missing[0]].focus();
+      return false;
+    }
+    return true;
+  }
+
+  Object.keys(fields).forEach(function (k) {
+    fields[k].addEventListener('input', function () {
+      if (this.value.trim() !== '') this.classList.remove('invalid');
+    });
+  });
+
+  // â”€â”€ Modal open/close â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  var overlay   = document.getElementById('payment-modal');
+  var openBtn   = document.getElementById('open-payment-btn');
+  var closeBtn  = document.getElementById('modal-close-btn');
+
+  openBtn.addEventListener('click', function () {
+    if (!validateBilling()) return;
+    overlay.classList.add('open');
+    document.body.style.overflow = 'hidden';
+  });
+
+  function closeModal() {
+    overlay.classList.remove('open');
+    document.body.style.overflow = '';
+  }
+
+  closeBtn.addEventListener('click', closeModal);
+  overlay.addEventListener('click', function (e) {
+    if (e.target === overlay) closeModal();
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') closeModal();
+  });
+
+  // â”€â”€ Stripe setup â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  var stripe   = Stripe(PK);
+  var elements = stripe.elements();
+
+  var elStyle = {
+    base: {
+      fontSize: '14.5px',
+      color: '#111827',
+      fontFamily: "'Inter','Segoe UI',system-ui,sans-serif",
+      fontSmoothing: 'antialiased',
+      '::placeholder': { color: '#c4c8d0' }
+    },
+    invalid: { color: '#ef4444' }
+  };
+
+  var cardNumber = elements.create('cardNumber', { style: elStyle });
+  var cardExpiry = elements.create('cardExpiry', { style: elStyle });
+  var cardCvc    = elements.create('cardCvc',    { style: elStyle, placeholder: 'CVC' });
+
+  cardNumber.mount('#card-number');
+  cardExpiry.mount('#card-expiry');
+  cardCvc.mount('#card-cvc');
+
+  [
+    { el: cardNumber, id: 'card-number' },
+    { el: cardExpiry, id: 'card-expiry' },
+    { el: cardCvc,    id: 'card-cvc'    }
+  ].forEach(function (item) {
+    var wrap = document.getElementById(item.id);
+    item.el.on('focus',  function ()  { wrap.classList.add('focused'); });
+    item.el.on('blur',   function ()  { wrap.classList.remove('focused'); });
+    item.el.on('change', function (e) { wrap.classList.toggle('invalid', !!e.error); });
+  });
+
+  // â”€â”€ Payment Request (Google Pay / Apple Pay) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  var pr = stripe.paymentRequest({
+    country: 'US',
+    currency: CURRENCY,
+    total: { label: COURSE_TITLE, amount: AMOUNT },
+    requestPayerName: false,
+    requestPayerEmail: false,
+    requestPayerPhone: false
+  });
+
+  var prReady    = false;
+  var btnApay    = document.getElementById('btn-apay');
+  var btnGpay    = document.getElementById('btn-gpay');
+  var expressRow = document.getElementById('express-row');
+
+  pr.canMakePayment().then(function (result) {
+    prReady = !!result;
+    if (!result) return;
+    if (!result.applePay)  btnApay.style.display = 'none';
+    if (!result.googlePay) btnGpay.style.display = 'none';
+    if (result.applePay !== result.googlePay) expressRow.classList.add('single');
+  });
+
+  function triggerPR() {
+    if (prReady) {
+      pr.show();
+    } else {
+      showError('This payment method is not available in your browser. Please use card payment.');
+    }
+  }
+  btnApay.addEventListener('click', triggerPR);
+  btnGpay.addEventListener('click', triggerPR);
+
+  pr.on('paymentmethod', function (ev) {
+    setLoading(true);
+    stripe.confirmCardPayment(CLIENT_SECRET, { payment_method: ev.paymentMethod.id }, { handleActions: false })
+      .then(function (result) {
+        if (result.error) {
+          ev.complete('fail');
+          showError(result.error.message || 'Payment failed. Please try again.');
+          return;
+        }
+        ev.complete('success');
+        if (result.paymentIntent.status === 'requires_action') {
+          stripe.confirmCardPayment(CLIENT_SECRET).then(function (r) {
+            if (r.error) showError(r.error.message || 'Authentication failed.');
+            else completeEnrollment(r.paymentIntent.id);
+          });
+        } else {
+          completeEnrollment(result.paymentIntent.id);
+        }
+      })
+      .catch(function () {
+        ev.complete('fail');
+        showError('Payment failed. Please try again.');
+      });
+  });
+
+  // â”€â”€ Card submit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  var payBtn = document.getElementById('pay-btn');
+  var errBox = document.getElementById('card-errors');
+
+  payBtn.addEventListener('click', function () {
+    errBox.textContent = '';
+    setLoading(true);
+
+    var billing = {
+      name: fields.first.value.trim() + ' ' + fields.last.value.trim(),
+      address: {
+        line1:       fields.address.value.trim(),
+        city:        fields.city.value.trim(),
+        postal_code: fields.postal.value.trim()
+      }
+    };
+
+    stripe.confirmCardPayment(CLIENT_SECRET, {
+      payment_method: {
+        card: cardNumber,
+        billing_details: billing
+      }
+    }).then(function (result) {
+      if (result.error) { showError(result.error.message || 'Payment failed. Please try again.'); return; }
+      if (result.paymentIntent && result.paymentIntent.status === 'succeeded') {
+        completeEnrollment(result.paymentIntent.id);
+      }
+    });
+  });
+
+  function showError(msg) {
+    errBox.textContent = msg;
+    setLoading(false);
+  }
+
+  function setLoading(on) {
+    payBtn.disabled = on;
+    payBtn.innerHTML = on
+      ? '<span class="spinner"></span>Processing\u2026'
+      : 'Pay $<?= $finalDisplay ?> now';
+  }
+
+  function completeEnrollment(piId) {
+    fetch(BASE_URL + '/api/complete-enrollment.php', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        payment_intent_id: piId,
+        order_id:          ORDER_ID,
+        course_id:         COURSE_ID
+      })
+    })
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      if (data.success) { window.location.href = data.redirect_url; }
+      else { showError(data.message || 'Enrollment failed. Please contact support.'); }
+    })
+    .catch(function () {
+      showError('Network error. Please contact support with your payment confirmation.');
+    });
+  }
+
+})();
+</script>
+</body>
+</html>
