@@ -146,3 +146,29 @@ function get_user_progress_map(mysqli $mysqli, int $clientId): array
 
     return $map;
 }
+
+/**
+ * Returns a map of course_id => purchase details for a given user.
+ */
+function get_user_purchases_map(mysqli $mysqli, int $clientId): array
+{
+    ensure_purchases_table($mysqli);
+
+    $map = [];
+    $stmt = $mysqli->prepare('SELECT id, course_id, original_amount, amount, coupon_code, discount_percent, currency, status, purchased_at FROM purchases WHERE client_id = ? ORDER BY purchased_at DESC');
+    if (!$stmt) {
+        return $map;
+    }
+
+    $stmt->bind_param('i', $clientId);
+    if ($stmt->execute()) {
+        $result = $stmt->get_result();
+        while ($row = $result?->fetch_assoc()) {
+            $cid = (int)($row['course_id'] ?? 0);
+            $map[$cid] = $row;
+        }
+    }
+    $stmt->close();
+
+    return $map;
+}
