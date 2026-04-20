@@ -381,11 +381,6 @@ $jsPublishableKey = json_encode(STRIPE_PUBLISHABLE_KEY);
       credentials: 'include'
     })
     .then(function (r) {
-      if (r.status === 401) {
-        window.top.location.href = BASE_URL + '/login.php?redirect=' +
-          encodeURIComponent(BASE_URL + '/checkout/cn?order_id=' + orderId);
-        return null;
-      }
       return r.json();
     })
     .then(function (data) {

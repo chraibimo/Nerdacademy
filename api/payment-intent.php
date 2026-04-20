@@ -47,12 +47,8 @@ if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
     pi_fail('Method not allowed.', 405);
 }
 
-// ── 2. Auth ───────────────────────────────────────────────────────────────────
-$currentUser = auth_current_user();
-if (!$currentUser) {
-    pi_fail('Unauthenticated.', 401);
-}
-$clientId = (int) $currentUser['id'];
+// ── 2. Auth (optional – order UUID acts as access token) ──────────────────────
+// No login required; the order UUID is unguessable.
 
 // ── 3. Validate order_id ──────────────────────────────────────────────────────
 $rawOrderId = trim((string) ($_GET['order'] ?? ''));
@@ -67,10 +63,8 @@ if (!$order) {
     pi_fail('Order not found or expired.', 404);
 }
 
-// ── 5. Ownership check ────────────────────────────────────────────────────────
-if ((int) $order['client_id'] !== $clientId) {
-    pi_fail('Forbidden.', 403);
-}
+// ── 5. Get client_id from order (no login needed) ────────────────────────────
+$clientId = (int) $order['client_id'];
 
 // ── 6. Already completed? ─────────────────────────────────────────────────────
 if ($order['status'] === 'completed') {
