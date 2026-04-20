@@ -52,10 +52,14 @@ if ($r) {
 }
 
 $search = trim((string)($_GET['q'] ?? ''));
+$catFilter = trim((string)($_GET['cat'] ?? ''));
 $where = '1=1';
 if ($search !== '') {
     $like = '%' . $mysqli->real_escape_string($search) . '%';
     $where .= " AND (t.subject LIKE '$like' OR t.message LIKE '$like' OR c.full_name LIKE '$like' OR c.email LIKE '$like')";
+}
+if ($catFilter !== '') {
+    $where .= " AND t.category = '" . $mysqli->real_escape_string($catFilter) . "'";
 }
 
 $tickets = [];
@@ -87,9 +91,16 @@ if ($q) {
 
 <div class="a-table-card">
   <div class="a-bar">
-    <form method="get" style="display:flex;gap:.6rem;flex-wrap:wrap;width:100%">
-      <input class="a-bar-input" name="q" value="<?php echo htmlspecialchars($search); ?>" placeholder="Search tickets" style="max-width:320px">
-      <button class="a-btn a-btn--primary a-btn--sm" type="submit">Search</button>
+    <form method="get" style="display:flex;gap:.6rem;flex-wrap:wrap;width:100%;align-items:flex-end">
+      <input class="a-bar-input" name="q" value="<?php echo htmlspecialchars($search); ?>" placeholder="Search tickets" style="max-width:280px">
+      <select name="cat" class="a-bar-input" style="padding:.45rem .65rem;max-width:180px">
+        <option value="">All categories</option>
+        <option value="refund" <?php echo $catFilter === 'refund' ? 'selected' : ''; ?>>Refund Requests</option>
+        <option value="general" <?php echo $catFilter === 'general' ? 'selected' : ''; ?>>General</option>
+        <option value="technical" <?php echo $catFilter === 'technical' ? 'selected' : ''; ?>>Technical</option>
+        <option value="billing" <?php echo $catFilter === 'billing' ? 'selected' : ''; ?>>Billing</option>
+      </select>
+      <button class="a-btn a-btn--primary a-btn--sm" type="submit">Filter</button>
     </form>
   </div>
 
@@ -98,6 +109,7 @@ if ($q) {
       <tr>
         <th>Ticket</th>
         <th>User</th>
+        <th>Category</th>
         <th>Status</th>
         <th>Priority</th>
         <th>Assigned</th>
@@ -106,7 +118,7 @@ if ($q) {
     </thead>
     <tbody>
       <?php if (empty($tickets)): ?>
-      <tr><td colspan="6" style="padding:1.5rem;text-align:center;color:var(--a-text-muted)">No tickets found.</td></tr>
+      <tr><td colspan="7" style="padding:1.5rem;text-align:center;color:var(--a-text-muted)">No tickets found.</td></tr>
       <?php else: foreach ($tickets as $t): ?>
       <tr>
         <td>
@@ -117,6 +129,7 @@ if ($q) {
           <?php echo htmlspecialchars((string)($t['full_name'] ?? 'Unknown')); ?><br>
           <span style="font-size:.8rem;color:var(--a-text-muted)"><?php echo htmlspecialchars((string)($t['email'] ?? '')); ?></span>
         </td>
+        <td><span class="a-badge <?php echo ($t['category'] ?? '') === 'refund' ? 'a-badge--danger' : 'a-badge--muted'; ?>"><?php echo htmlspecialchars((string)($t['category'] ?? 'general')); ?></span></td>
         <td><span class="a-badge <?php echo $t['status'] === 'resolved' ? 'a-badge--success' : ($t['status'] === 'closed' ? 'a-badge--muted' : 'a-badge--warning'); ?>"><?php echo htmlspecialchars((string)$t['status']); ?></span></td>
         <td><span class="a-badge <?php echo $t['priority'] === 'urgent' ? 'a-badge--danger' : ($t['priority'] === 'high' ? 'a-badge--warning' : 'a-badge--muted'); ?>"><?php echo htmlspecialchars((string)$t['priority']); ?></span></td>
         <td><?php echo htmlspecialchars((string)($t['assigned_name'] ?? 'Unassigned')); ?></td>
@@ -125,7 +138,7 @@ if ($q) {
         </td>
       </tr>
       <tr id="ticket-row-<?php echo (int)$t['id']; ?>" style="display:none">
-        <td colspan="6" style="background:#f8fafc">
+        <td colspan="7" style="background:#f8fafc">
           <form method="post" style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:.65rem;padding:.8rem 0">
             <input type="hidden" name="ticket_id" value="<?php echo (int)$t['id']; ?>">
             <div>

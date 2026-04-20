@@ -37,9 +37,15 @@ if ($user) {
 // Handle refund request submission
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['request_refund']) && $user) {
     $refundCourseId = (int)($_POST['course_id'] ?? 0);
-    $refundReason = trim((string)($_POST['refund_reason'] ?? ''));
+    $refundReasonCategory = trim((string)($_POST['refund_reason_category'] ?? ''));
+    $refundDescription = trim((string)($_POST['refund_description'] ?? ''));
     $purchase = $purchaseMap[$refundCourseId] ?? null;
-    if ($purchase && $refundReason !== '') {
+
+    // Server-side: block refund if progress >= 25%
+    $courseProgress = $progressMap[$refundCourseId] ?? ['progress_percent' => 0];
+    $progressPct = (int)($courseProgress['progress_percent'] ?? 0);
+
+    if ($purchase && $refundReasonCategory !== '' && $refundDescription !== '' && $progressPct < 25) {
         $courseName = '';
         foreach ($courses as $c) {
             if ((int)$c['id'] === $refundCourseId) { $courseName = $c['title']; break; }
@@ -48,10 +54,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['request_refund']) && 
         $message = "Course: $courseName (ID: $refundCourseId)\n"
                  . "Purchase ID: {$purchase['id']}\n"
                  . "Amount: \${$purchase['amount']} {$purchase['currency']}\n"
-                 . "Purchased: {$purchase['purchased_at']}\n\n"
-                 . "Reason:\n$refundReason";
+                 . "Purchased: {$purchase['purchased_at']}\n"
+                 . "Course progress: {$progressPct}%\n\n"
+                 . "Reason: $refundReasonCategory\n\n"
+                 . "Description:\n$refundDescription";
         create_support_ticket($mysqli, (int)$user['id'], $subject, 'refund', 'normal', $message);
         $refundSuccess = true;
+    } elseif ($purchase && $progressPct >= 25) {
+        $refundError = 'Refund is not available once you have completed 25% or more of the course.';
     }
 }
 
@@ -184,10 +194,17 @@ require_once __DIR__ . '/includes/header.php';
                                             <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
                                             Details
                                         </button>
+                                        <?php if ($progress < 25): ?>
                                         <button type="button" class="mc-action-btn" onclick="showRefund(<?php echo (int)$course['id']; ?>)" title="Request a refund">
                                             <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/></svg>
                                             Refund
                                         </button>
+                                        <?php else: ?>
+                                        <button type="button" class="mc-action-btn mc-action-btn--disabled" disabled title="Refund unavailable — course progress exceeds 25%">
+                                            <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/></svg>
+                                            Refund
+                                        </button>
+                                        <?php endif; ?>
                                         <button type="button" class="mc-action-btn" onclick="shareCourse(<?php echo (int)$course['id']; ?>)" title="Share this course">
                                             <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
                                             Share
@@ -218,6 +235,7 @@ var __purchaseData = <?php
         $cid = (int)$c['id'];
         if (!in_array($cid, $purchasedIds, true)) continue;
         $p = $purchaseMap[$cid] ?? null;
+        $cprog = $progressMap[$cid] ?? ['progress_percent' => 0];
         $jsData[$cid] = [
             'title'       => $c['title'],
             'category'    => $c['category'],
@@ -230,6 +248,7 @@ var __purchaseData = <?php
             'purchased_at'=> $p['purchased_at'] ?? '',
             'status'      => $p['status'] ?? 'completed',
             'purchase_id' => $p['id'] ?? '',
+            'progress'    => (int)($cprog['progress_percent'] ?? 0),
             'url'         => rtrim((isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https' : 'http') . '://' . ($_SERVER['HTTP_HOST'] ?? 'nerdacademy.ai'), '/') . BASE . '/course.php?id=' . $cid,
         ];
     }
@@ -263,17 +282,41 @@ var __purchaseData = <?php
             <div class="mc-modal-body">
                 <input type="hidden" name="request_refund" value="1">
                 <input type="hidden" name="course_id" id="refund-course-id" value="">
-                <p id="refund-course-name" style="font-weight:600;margin-bottom:.5rem"></p>
-                <p style="font-size:.84rem;color:var(--text-muted);margin-bottom:1rem">
-                    Please tell us why you'd like a refund. Our team will review your request within 2–3 business days. 
-                    See our <a href="<?php echo BASE; ?>/refund-policy.php" target="_blank" style="color:var(--accent-primary)">refund policy</a>.
-                </p>
-                <label for="refund-reason" style="display:block;font-size:.82rem;font-weight:600;margin-bottom:.35rem">Reason for refund</label>
-                <textarea name="refund_reason" id="refund-reason" rows="4" required placeholder="Please describe the reason for your refund request…" style="width:100%;border:1.5px solid var(--border);border-radius:8px;padding:.6rem .75rem;font-size:.88rem;font-family:inherit;resize:vertical;background:var(--bg-primary);color:var(--text-primary)"></textarea>
+                <p id="refund-course-name" style="font-weight:600;margin-bottom:.35rem"></p>
+                <p id="refund-progress-note" style="font-size:.78rem;color:var(--text-muted);margin-bottom:.75rem"></p>
+
+                <div id="refund-eligible" style="display:none">
+                    <p style="font-size:.84rem;color:var(--text-muted);margin-bottom:1rem">
+                        Please select a reason and describe the issue. Our team will review your request within 2–3 business days.
+                        See our <a href="<?php echo BASE; ?>/refund-policy.php" target="_blank" style="color:var(--accent-primary)">refund policy</a>.
+                    </p>
+
+                    <label for="refund-reason-category" style="display:block;font-size:.82rem;font-weight:600;margin-bottom:.35rem">Why do you want a refund?</label>
+                    <select name="refund_reason_category" id="refund-reason-category" required style="width:100%;border:1.5px solid var(--border);border-radius:8px;padding:.6rem .75rem;font-size:.88rem;font-family:inherit;background:var(--bg-primary);color:var(--text-primary);margin-bottom:.75rem;cursor:pointer">
+                        <option value="" disabled selected>Select a reason…</option>
+                        <option value="Course not as described">Course not as described</option>
+                        <option value="Content quality issues">Content quality issues</option>
+                        <option value="Technical problems">Technical problems</option>
+                        <option value="Purchased by mistake">Purchased by mistake</option>
+                        <option value="Found a better alternative">Found a better alternative</option>
+                        <option value="Too difficult / Too easy">Too difficult / Too easy</option>
+                        <option value="Other">Other</option>
+                    </select>
+
+                    <label for="refund-description" style="display:block;font-size:.82rem;font-weight:600;margin-bottom:.35rem">Describe your issue</label>
+                    <textarea name="refund_description" id="refund-description" rows="4" required minlength="20" placeholder="Please provide details about your refund request (min. 20 characters)…" style="width:100%;border:1.5px solid var(--border);border-radius:8px;padding:.6rem .75rem;font-size:.88rem;font-family:inherit;resize:vertical;background:var(--bg-primary);color:var(--text-primary)"></textarea>
+                </div>
+
+                <div id="refund-ineligible" style="display:none">
+                    <div style="background:#fef2f2;border:1.5px solid #fecaca;border-radius:10px;padding:1rem;color:#991b1b;font-size:.86rem;font-weight:500">
+                        <strong>Refund not available.</strong><br>
+                        You have completed 25% or more of this course. Per our <a href="<?php echo BASE; ?>/refund-policy.php" target="_blank" style="color:var(--indigo,#4f46e5)">refund policy</a>, refunds are only available when course progress is below 25%.
+                    </div>
+                </div>
             </div>
             <div class="mc-modal-footer">
                 <button type="button" onclick="closeModals()" class="btn-ghost" style="padding:.45rem 1rem">Cancel</button>
-                <button type="submit" class="btn-primary" style="padding:.45rem 1rem">Submit Request</button>
+                <button type="submit" id="refund-submit-btn" class="btn-primary" style="padding:.45rem 1rem">Submit Request</button>
             </div>
         </form>
     </div>
@@ -313,6 +356,9 @@ var __purchaseData = <?php
 <?php if (!empty($refundSuccess)): ?>
 <script>alert('Your refund request has been submitted. Our team will review it within 2–3 business days.');</script>
 <?php endif; ?>
+<?php if (!empty($refundError)): ?>
+<script>alert(<?php echo json_encode($refundError); ?>);</script>
+<?php endif; ?>
 
 <script>
 function showDetails(cid) {
@@ -343,7 +389,17 @@ function showRefund(cid) {
     if (!d) return;
     document.getElementById('refund-course-id').value = cid;
     document.getElementById('refund-course-name').textContent = d.title;
-    document.getElementById('refund-reason').value = '';
+    document.getElementById('refund-progress-note').textContent = 'Your progress: ' + d.progress + '%';
+
+    var eligible = d.progress < 25;
+    document.getElementById('refund-eligible').style.display = eligible ? 'block' : 'none';
+    document.getElementById('refund-ineligible').style.display = eligible ? 'none' : 'block';
+    document.getElementById('refund-submit-btn').style.display = eligible ? '' : 'none';
+
+    if (eligible) {
+        document.getElementById('refund-reason-category').selectedIndex = 0;
+        document.getElementById('refund-description').value = '';
+    }
     document.getElementById('modal-refund').style.display = 'flex';
 }
 
@@ -395,10 +451,14 @@ document.addEventListener('keydown', function(e){ if(e.key === 'Escape') closeMo
     cursor: pointer;
     transition: all .15s;
 }
-.mc-action-btn:hover {
+.mc-action-btn:hover:not(:disabled) {
     border-color: var(--accent-primary);
     color: var(--accent-primary);
     background: rgba(79,70,229,.05);
+}
+.mc-action-btn--disabled {
+    opacity: .45;
+    cursor: not-allowed !important;
 }
 /* Modal overlay */
 .mc-modal-overlay {
