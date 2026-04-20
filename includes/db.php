@@ -1,15 +1,22 @@
 <?php
-// Basic MySQL connection for XAMPP local setup.
-// Update credentials if your MySQL config is different.
+// Basic MySQL connection.
+// Reads from environment variables (getenv or $_SERVER via Apache SetEnv).
 
+// Helper: read env var from getenv() or $_SERVER (Apache SetEnv uses $_SERVER).
+function _env(string $key, string $default = ''): string {
+    $v = getenv($key);
+    if ($v !== false && $v !== '') return $v;
+    return $_SERVER[$key] ?? $_ENV[$key] ?? $default;
+}
 
-$DB_HOST = getenv('DB_HOST') ?: '127.0.0.1';
-$DB_PORT = (int)(getenv('DB_PORT') ?: 3306);
-$DB_NAME = getenv('DB_NAME') ?: 'ai_courses';
-$DB_USER = getenv('DB_USER') ?: 'root';
-$DB_PASS = getenv('DB_PASS') ?: '';
+$DB_HOST = _env('DB_HOST', '127.0.0.1');
+$DB_PORT = (int)_env('DB_PORT', '3306');
+$DB_NAME = _env('DB_NAME', 'ai_courses');
+$DB_USER = _env('DB_USER', 'root');
+$DB_PASS = _env('DB_PASS', '');
 
-$mysqli = new mysqli($DB_HOST, $DB_USER, $DB_PASS, '', $DB_PORT);
+// Connect directly to the named database (shared hosting won't allow CREATE DATABASE).
+$mysqli = new mysqli($DB_HOST, $DB_USER, $DB_PASS, $DB_NAME, $DB_PORT);
 
 if ($mysqli->connect_errno) {
     http_response_code(500);
@@ -17,43 +24,7 @@ if ($mysqli->connect_errno) {
     echo json_encode([
         'ok' => false,
         'error' => 'db-connect-failed',
-        'message' => 'Unable to connect to MySQL. Check includes/db.php credentials.'
-    ]);
-    exit;
-}
-
-// Ensure the target database exists, then select it.
-$safeDbName = preg_replace('/[^a-zA-Z0-9_]/', '', $DB_NAME);
-if ($safeDbName === '') {
-    http_response_code(500);
-    header('Content-Type: application/json; charset=utf-8');
-    echo json_encode([
-        'ok' => false,
-        'error' => 'invalid-db-name',
-        'message' => 'Invalid DB_NAME value in includes/db.php.'
-    ]);
-    exit;
-}
-
-$createDbSql = "CREATE DATABASE IF NOT EXISTS `{$safeDbName}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci";
-if (!$mysqli->query($createDbSql)) {
-    http_response_code(500);
-    header('Content-Type: application/json; charset=utf-8');
-    echo json_encode([
-        'ok' => false,
-        'error' => 'db-create-failed',
-        'message' => 'Unable to create/select database ' . $safeDbName . ': ' . $mysqli->error
-    ]);
-    exit;
-}
-
-if (!$mysqli->select_db($safeDbName)) {
-    http_response_code(500);
-    header('Content-Type: application/json; charset=utf-8');
-    echo json_encode([
-        'ok' => false,
-        'error' => 'db-select-failed',
-        'message' => 'Unable to select database ' . $safeDbName . ': ' . $mysqli->error
+        'message' => 'Unable to connect to MySQL. Check includes/db.php credentials. (' . $mysqli->connect_error . ')'
     ]);
     exit;
 }
