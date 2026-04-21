@@ -54,8 +54,16 @@ require_once __DIR__ . '/includes/header.php';
 
 <style>
 /* ── Page layout ─────────────────────────────────── */
-.cert-page { padding: 2rem 0 4rem; }
+.cert-page { padding: calc(var(--nav-h, 72px) + 2rem) 0 4rem; }
 .cert-page .container { max-width: 1000px; }
+
+/* ── Confetti canvas ─────────────────────────────── */
+#cert-confetti {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9999;
+}
 
 /* ── Controls bar ────────────────────────────────── */
 .cert-controls {
@@ -460,6 +468,7 @@ require_once __DIR__ . '/includes/header.php';
 </section>
 
 <?php if ($certificate): ?>
+<canvas id="cert-confetti" aria-hidden="true"></canvas>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js" crossorigin="anonymous"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js" crossorigin="anonymous"></script>
 <script>
@@ -523,6 +532,113 @@ async function downloadCert(type) {
     pdfLabel.textContent = 'Download PDF';
   }
 }
+</script>
+<?php endif; ?>
+
+<?php if ($certificate): ?>
+<script>
+(function(){
+  var canvas = document.getElementById('cert-confetti');
+  if (!canvas) return;
+  var ctx = canvas.getContext('2d');
+
+  var COLORS = [
+    '#6366f1','#8b5cf6','#a855f7',
+    '#f59e0b','#fbbf24','#fcd34d',
+    '#10b981','#34d399',
+    '#f43f5e','#fb7185',
+    '#38bdf8','#60a5fa',
+    '#fff','#e0e7ff'
+  ];
+
+  var pieces = [];
+  var W, H;
+
+  function resize(){
+    W = canvas.width  = window.innerWidth;
+    H = canvas.height = window.innerHeight;
+  }
+  resize();
+  window.addEventListener('resize', resize);
+
+  function rand(a, b){ return a + Math.random() * (b - a); }
+
+  function Piece(){
+    this.x  = rand(0, W);
+    this.y  = rand(-H * 0.3, -10);
+    this.w  = rand(7, 15);
+    this.h  = rand(4, 9);
+    this.color = COLORS[Math.floor(Math.random() * COLORS.length)];
+    this.vx = rand(-2, 2);
+    this.vy = rand(2.5, 6.5);
+    this.angle  = rand(0, Math.PI * 2);
+    this.spin   = rand(-0.12, 0.12);
+    this.opacity = 1;
+    // shape: 0=rect, 1=circle, 2=strip
+    this.shape  = Math.floor(Math.random() * 3);
+  }
+
+  Piece.prototype.update = function(dt){
+    this.x += this.vx;
+    this.y += this.vy;
+    this.angle += this.spin;
+    this.vx += rand(-0.04, 0.04); // gentle drift
+    // fade when near bottom
+    if (this.y > H * 0.75) this.opacity = Math.max(0, this.opacity - 0.018);
+  };
+
+  Piece.prototype.draw = function(){
+    ctx.save();
+    ctx.globalAlpha = this.opacity;
+    ctx.translate(this.x, this.y);
+    ctx.rotate(this.angle);
+    ctx.fillStyle = this.color;
+    if (this.shape === 1) {
+      ctx.beginPath();
+      ctx.arc(0, 0, this.w / 2, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (this.shape === 2) {
+      ctx.fillRect(-this.w / 2, -this.h / 4, this.w, this.h / 2);
+    } else {
+      ctx.fillRect(-this.w / 2, -this.h / 2, this.w, this.h);
+    }
+    ctx.restore();
+  };
+
+  // Burst: spawn a wave of pieces
+  var TOTAL = 180;
+  var spawnCount = 0;
+  var spawnInterval = setInterval(function(){
+    var batch = Math.min(18, TOTAL - spawnCount);
+    for (var i = 0; i < batch; i++) pieces.push(new Piece());
+    spawnCount += batch;
+    if (spawnCount >= TOTAL) clearInterval(spawnInterval);
+  }, 80);
+
+  var active = true;
+  var last = performance.now();
+
+  function loop(now){
+    if (!active) return;
+    var dt = now - last; last = now;
+    ctx.clearRect(0, 0, W, H);
+
+    for (var i = pieces.length - 1; i >= 0; i--){
+      pieces[i].update(dt);
+      pieces[i].draw();
+      if (pieces[i].y > H + 20 || pieces[i].opacity <= 0) pieces.splice(i, 1);
+    }
+
+    if (pieces.length > 0) {
+      requestAnimationFrame(loop);
+    } else {
+      active = false;
+      canvas.remove();
+    }
+  }
+
+  requestAnimationFrame(loop);
+})();
 </script>
 <?php endif; ?>
 
