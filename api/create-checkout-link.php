@@ -35,7 +35,12 @@ set_exception_handler(static function (Throwable $e): void {
         http_response_code(500);
         header('Content-Type: application/json; charset=utf-8');
     }
-    echo json_encode(['ok' => false, 'error' => 'server_error']);
+    echo json_encode([
+        'ok' => false,
+        'error' => 'server_error',
+        'detail' => $e->getMessage(),
+        'where' => basename($e->getFile()) . ':' . $e->getLine(),
+    ]);
     exit;
 });
 
