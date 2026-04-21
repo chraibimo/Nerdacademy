@@ -337,92 +337,98 @@ var __purchaseData = <?php
             <input type="hidden" name="course_id" id="refund-course-id" value="">
             <input type="hidden" name="refund_reason_category" id="refund-reason-hidden" value="">
 
-            <!-- Gradient header -->
+            <!-- Header -->
             <div class="rfnd-header">
-                <button type="button" onclick="closeModals()" class="rfnd-close-btn" aria-label="Close">&times;</button>
-                <div class="rfnd-header-icon">
-                    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="3"/><line x1="2" y1="10" x2="22" y2="10"/></svg>
+                <div class="rfnd-header-icon-wrap" aria-hidden="true">
+                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="3"/><path d="M2 10h20"/></svg>
                 </div>
-                <h2 class="rfnd-title">Request a Refund</h2>
-                <p class="rfnd-subtitle" id="rfnd-course-name-header"></p>
+                <div class="rfnd-header-text">
+                    <h2 class="rfnd-title">Request a Refund</h2>
+                    <p class="rfnd-subtitle" id="rfnd-course-name-header"></p>
+                </div>
+                <button type="button" onclick="closeModals()" class="rfnd-close-btn" aria-label="Close">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
             </div>
 
             <!-- Body -->
             <div class="rfnd-body">
-                <!-- Progress strip -->
+                <!-- Progress row -->
                 <div class="rfnd-progress-strip">
-                    <span class="rfnd-progress-label">Progress</span>
+                    <div class="rfnd-progress-meta">
+                        <span class="rfnd-progress-label">Course progress</span>
+                        <span class="rfnd-progress-pct" id="rfnd-progress-pct">0%</span>
+                    </div>
                     <div class="rfnd-progress-bar-track">
                         <div class="rfnd-progress-bar-fill" id="rfnd-progress-fill" style="width:0%"></div>
                     </div>
-                    <span class="rfnd-progress-pct" id="rfnd-progress-pct">0%</span>
                 </div>
 
                 <!-- Eligible section -->
                 <div id="refund-eligible" style="display:none">
-                    <p class="rfnd-policy-note">
-                        Our team reviews requests within <strong>2–3 business days</strong>.
-                        <a href="<?php echo BASE; ?>/refund-policy.php" target="_blank">Refund policy →</a>
-                    </p>
-
-                    <span class="rfnd-section-label">Why do you want a refund?</span>
+                    <p class="rfnd-section-label">Select a reason</p>
                     <div class="rfnd-reasons-grid">
                         <button type="button" class="rfnd-reason-card" data-value="Course not as described" onclick="selectReason(this)">
-                            <span class="rfnd-reason-icon">🎯</span>
+                            <span class="rfnd-reason-icon"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg></span>
                             <span>Not as described</span>
                         </button>
                         <button type="button" class="rfnd-reason-card" data-value="Content quality issues" onclick="selectReason(this)">
-                            <span class="rfnd-reason-icon">⭐</span>
+                            <span class="rfnd-reason-icon"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg></span>
                             <span>Quality issues</span>
                         </button>
                         <button type="button" class="rfnd-reason-card" data-value="Technical problems" onclick="selectReason(this)">
-                            <span class="rfnd-reason-icon">🔧</span>
+                            <span class="rfnd-reason-icon"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/></svg></span>
                             <span>Technical issues</span>
                         </button>
                         <button type="button" class="rfnd-reason-card" data-value="Purchased by mistake" onclick="selectReason(this)">
-                            <span class="rfnd-reason-icon">🛒</span>
+                            <span class="rfnd-reason-icon"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 01-8 0"/></svg></span>
                             <span>Wrong purchase</span>
                         </button>
                         <button type="button" class="rfnd-reason-card" data-value="Found a better alternative" onclick="selectReason(this)">
-                            <span class="rfnd-reason-icon">🔍</span>
+                            <span class="rfnd-reason-icon"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></span>
                             <span>Better alternative</span>
                         </button>
                         <button type="button" class="rfnd-reason-card" data-value="Too difficult / Too easy" onclick="selectReason(this)">
-                            <span class="rfnd-reason-icon">📊</span>
+                            <span class="rfnd-reason-icon"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg></span>
                             <span>Wrong difficulty</span>
                         </button>
                         <button type="button" class="rfnd-reason-card rfnd-reason-other" data-value="Other" onclick="selectReason(this)">
-                            <span class="rfnd-reason-icon">💬</span>
+                            <span class="rfnd-reason-icon"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg></span>
                             <span>Other reason</span>
                         </button>
                     </div>
 
                     <div class="rfnd-desc-wrap">
-                        <label class="rfnd-section-label" for="refund-description">Describe the issue</label>
-                        <textarea name="refund_description" id="refund-description" rows="4" required minlength="20"
-                            placeholder="Share what went wrong — the more detail, the faster we can help (min. 20 characters)…"
+                        <label class="rfnd-section-label" for="refund-description">Additional details</label>
+                        <textarea name="refund_description" id="refund-description" rows="3" required minlength="20"
+                            placeholder="Describe what went wrong — helps us resolve your request faster (min. 20 characters)"
                             class="rfnd-textarea" oninput="updateCharCount(this)"></textarea>
-                        <div class="rfnd-char-counter"><span id="rfnd-char-count">0</span> / 500 characters</div>
+                        <div class="rfnd-char-counter"><span id="rfnd-char-count">0</span>&thinsp;/&thinsp;500</div>
                     </div>
                 </div>
 
                 <!-- Ineligible section -->
                 <div id="refund-ineligible" style="display:none">
                     <div class="rfnd-ineligible-card">
-                        <div class="rfnd-ineligible-icon">🚫</div>
+                        <div class="rfnd-ineligible-icon-wrap">
+                            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>
+                        </div>
                         <h4>Refund Not Available</h4>
-                        <p>You've completed <strong id="rfnd-ineligible-pct"></strong> of this course. Our <a href="<?php echo BASE; ?>/refund-policy.php" target="_blank">refund policy</a> allows refunds only when progress is below 25%.</p>
+                        <p>You've completed <strong id="rfnd-ineligible-pct"></strong> of this course. Refunds are only available when progress is below 25%. See our <a href="<?php echo BASE; ?>/refund-policy.php" target="_blank">refund policy</a>.</p>
                     </div>
                 </div>
             </div>
 
             <!-- Footer -->
             <div class="rfnd-footer">
-                <button type="button" onclick="closeModals()" class="rfnd-btn-cancel">Cancel</button>
-                <button type="submit" id="refund-submit-btn" class="rfnd-btn-submit">
-                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-                    Submit Request
-                </button>
+                <p class="rfnd-footer-note">Reviewed within <strong>2–3 business days</strong>&nbsp;·&nbsp;<a href="<?php echo BASE; ?>/refund-policy.php" target="_blank">Policy</a></p>
+                <div class="rfnd-footer-actions">
+                    <button type="button" onclick="closeModals()" class="rfnd-btn-cancel">Cancel</button>
+                    <button type="submit" id="refund-submit-btn" class="rfnd-btn-submit">
+                        Submit request
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                    </button>
+                </div>
             </div>
         </form>
     </div>
@@ -660,166 +666,195 @@ body.modal-open > *:not(.mc-modal-overlay) { filter: blur(5px); transition: filt
 }
 .mc-share-icon:hover { opacity: .85; }
 
-/* ── Refund Modal (unique redesign) ── */
-.rfnd-modal { max-width: 500px; padding: 0; overflow: hidden; border-radius: 18px; }
-.rfnd-header {
-    position: relative;
-    background: linear-gradient(135deg, #4338ca 0%, #6366f1 50%, #8b5cf6 100%);
-    padding: 2rem 1.5rem 1.4rem;
-    text-align: center;
-    color: #fff;
+/* ── Refund Modal — Premium ── */
+.rfnd-modal {
+    max-width: 520px;
+    padding: 0;
+    overflow: hidden;
+    border-radius: 16px;
 }
+/* Indigo accent stripe */
+.rfnd-modal::before {
+    content: '';
+    display: block;
+    height: 3px;
+    background: linear-gradient(90deg, #4f46e5 0%, #7c3aed 55%, #a855f7 100%);
+}
+/* Header */
+.rfnd-header {
+    background: #fff;
+    padding: 1.1rem 1.35rem 1rem;
+    border-bottom: 1px solid #f1f5f9;
+    display: flex;
+    align-items: center;
+    gap: .85rem;
+}
+.rfnd-header-icon-wrap {
+    flex-shrink: 0;
+    width: 36px; height: 36px;
+    background: #eef2ff;
+    border-radius: 9px;
+    display: flex; align-items: center; justify-content: center;
+    color: #4f46e5;
+}
+.rfnd-header-text { flex: 1; min-width: 0; }
+.rfnd-title { font-size: .95rem; font-weight: 700; color: var(--text-primary); margin: 0 0 .1rem; }
+.rfnd-subtitle { font-size: .78rem; color: var(--text-muted); margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .rfnd-close-btn {
-    position: absolute;
-    top: .7rem; right: .7rem;
-    background: rgba(255,255,255,.18);
+    flex-shrink: 0;
+    width: 28px; height: 28px;
+    border-radius: 7px;
+    background: none;
     border: none;
-    color: #fff;
-    font-size: 1.15rem;
-    line-height: 1;
-    width: 30px; height: 30px;
-    border-radius: 50%;
+    color: var(--text-muted);
     cursor: pointer;
     display: flex; align-items: center; justify-content: center;
-    transition: background .15s;
+    transition: background .15s, color .15s;
+    padding: 0;
+    margin-left: auto;
 }
-.rfnd-close-btn:hover { background: rgba(255,255,255,.32); }
-.rfnd-header-icon {
-    background: rgba(255,255,255,.18);
-    border-radius: 50%;
-    width: 54px; height: 54px;
-    display: flex; align-items: center; justify-content: center;
-    margin: 0 auto .8rem;
-    backdrop-filter: blur(4px);
-}
-.rfnd-title { font-size: 1.2rem; font-weight: 800; margin: 0 0 .35rem; letter-spacing: -.01em; }
-.rfnd-subtitle { font-size: .82rem; opacity: .82; margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 340px; display: inline-block; }
-.rfnd-body { padding: 1.2rem 1.3rem; background: #ffffff; }
-/* Progress strip */
+.rfnd-close-btn:hover { background: #f1f5f9; color: var(--text-primary); }
+/* Body */
+.rfnd-body { padding: 1.2rem 1.35rem; background: #fff; max-height: 440px; overflow-y: auto; }
+/* Progress row */
 .rfnd-progress-strip {
-    display: flex; align-items: center; gap: .65rem;
-    background: var(--bg-secondary);
-    border: 1px solid var(--border);
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
     border-radius: 10px;
-    padding: .55rem .9rem;
-    margin-bottom: 1.1rem;
+    padding: .7rem 1rem;
+    margin-bottom: 1.25rem;
 }
-.rfnd-progress-label { font-size: .75rem; font-weight: 600; color: var(--text-muted); white-space: nowrap; }
-.rfnd-progress-bar-track { flex: 1; height: 6px; background: var(--border); border-radius: 9999px; overflow: hidden; }
-.rfnd-progress-bar-fill { height: 100%; border-radius: 9999px; background: linear-gradient(90deg, #6366f1, #8b5cf6); transition: width .5s ease; }
-.rfnd-progress-pct { font-size: .78rem; font-weight: 700; color: var(--text-primary); white-space: nowrap; }
-/* Policy note */
-.rfnd-policy-note { font-size: .8rem; color: var(--text-muted); margin: 0 0 1rem; line-height: 1.65; }
-.rfnd-policy-note a { color: #6366f1; text-decoration: none; font-weight: 600; }
-.rfnd-policy-note a:hover { text-decoration: underline; }
+.rfnd-progress-meta {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: .4rem;
+}
+.rfnd-progress-label { font-size: .72rem; font-weight: 600; color: var(--text-muted); }
+.rfnd-progress-pct { font-size: .72rem; font-weight: 700; color: var(--text-primary); }
+.rfnd-progress-bar-track { height: 5px; background: #e2e8f0; border-radius: 9999px; overflow: hidden; }
+.rfnd-progress-bar-fill { height: 100%; border-radius: 9999px; background: linear-gradient(90deg, #4f46e5, #7c3aed); transition: width .5s ease; }
 /* Section label */
-.rfnd-section-label { display: block; font-size: .72rem; font-weight: 800; color: var(--text-muted); margin-bottom: .55rem; text-transform: uppercase; letter-spacing: .07em; }
-/* Reason grid */
+.rfnd-section-label { display: block; font-size: .67rem; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: var(--text-muted); margin-bottom: .55rem; }
+/* Reason grid — 2 columns, SVG icons, horizontal pills */
 .rfnd-reasons-grid {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: .45rem;
-    margin-bottom: 1.1rem;
+    grid-template-columns: 1fr 1fr;
+    gap: .38rem;
+    margin-bottom: 1.15rem;
 }
 .rfnd-reason-card {
-    display: flex; flex-direction: column; align-items: center; gap: .28rem;
-    padding: .7rem .4rem .6rem;
-    border: 1.5px solid var(--border);
-    border-radius: 11px;
-    background: var(--bg-secondary);
+    display: flex; align-items: center; gap: .55rem;
+    padding: .6rem .8rem;
+    border: 1.5px solid #e2e8f0;
+    border-radius: 9px;
+    background: #f8fafc;
     cursor: pointer;
-    font-size: .74rem;
-    font-weight: 600;
+    font-size: .79rem;
+    font-weight: 500;
     color: var(--text-secondary);
     font-family: inherit;
-    transition: border-color .15s, background .15s, color .15s, transform .1s, box-shadow .15s;
-    text-align: center;
-    line-height: 1.3;
+    text-align: left;
+    transition: border-color .15s, background .15s, color .15s, box-shadow .15s;
 }
 .rfnd-reason-card:hover {
-    border-color: #6366f1;
-    background: rgba(99,102,241,.07);
-    color: var(--text-primary);
-    transform: translateY(-1px);
-    box-shadow: 0 3px 12px rgba(99,102,241,.15);
+    border-color: #818cf8;
+    background: #eef2ff;
+    color: #3730a3;
 }
 .rfnd-reason-card.active {
-    border-color: #6366f1;
-    background: rgba(99,102,241,.13);
-    color: #4f46e5;
-    box-shadow: 0 0 0 3px rgba(99,102,241,.15);
+    border-color: #4f46e5;
+    background: #eef2ff;
+    color: #3730a3;
+    box-shadow: 0 0 0 3px rgba(79,70,229,.1);
 }
-.rfnd-reason-card.active .rfnd-reason-icon { transform: scale(1.18); }
-.rfnd-reason-other { grid-column: span 3; flex-direction: row; gap: .5rem; justify-content: center; padding: .6rem .4rem; }
-.rfnd-reason-icon { font-size: 1.25rem; transition: transform .2s; line-height: 1; }
+.rfnd-reason-icon {
+    flex-shrink: 0;
+    color: #94a3b8;
+    display: flex; align-items: center;
+    transition: color .15s;
+}
+.rfnd-reason-card:hover .rfnd-reason-icon,
+.rfnd-reason-card.active .rfnd-reason-icon { color: #4f46e5; }
+.rfnd-reason-other { grid-column: 1 / -1; }
 /* Textarea */
 .rfnd-desc-wrap { position: relative; }
 .rfnd-textarea {
     width: 100%;
-    border: 1.5px solid var(--border);
-    border-radius: 11px;
-    padding: .7rem .9rem;
-    font-size: .85rem;
+    border: 1.5px solid #e2e8f0;
+    border-radius: 10px;
+    padding: .72rem .9rem;
+    font-size: .84rem;
     font-family: inherit;
     resize: vertical;
-    background: var(--bg-primary);
+    background: #fff;
     color: var(--text-primary);
     transition: border-color .2s, box-shadow .2s;
-    min-height: 88px;
+    min-height: 86px;
     box-sizing: border-box;
     line-height: 1.6;
 }
-.rfnd-textarea:focus { outline: none; border-color: #6366f1; box-shadow: 0 0 0 3px rgba(99,102,241,.12); }
-.rfnd-textarea::placeholder { color: var(--text-muted); opacity: .7; }
-.rfnd-char-counter { text-align: right; font-size: .72rem; color: var(--text-muted); margin-top: .3rem; }
+.rfnd-textarea:focus { outline: none; border-color: #6366f1; box-shadow: 0 0 0 3px rgba(99,102,241,.1); }
+.rfnd-textarea::placeholder { color: #94a3b8; }
+.rfnd-char-counter { text-align: right; font-size: .7rem; color: var(--text-muted); margin-top: .28rem; }
 /* Ineligible card */
 .rfnd-ineligible-card {
-    background: linear-gradient(135deg, #fff1f2 0%, #fef2f2 100%);
+    background: #fff7f7;
     border: 1.5px solid #fecaca;
-    border-radius: 14px;
+    border-radius: 12px;
     padding: 1.75rem 1.5rem;
     text-align: center;
-    color: #991b1b;
 }
-.rfnd-ineligible-icon { font-size: 2.6rem; margin-bottom: .6rem; line-height: 1; }
-.rfnd-ineligible-card h4 { margin: 0 0 .5rem; font-size: 1.05rem; font-weight: 800; }
-.rfnd-ineligible-card p { font-size: .84rem; line-height: 1.75; margin: 0; color: #7f1d1d; }
-.rfnd-ineligible-card a { color: #dc2626; font-weight: 600; }
+.rfnd-ineligible-icon-wrap {
+    width: 52px; height: 52px;
+    background: #fee2e2;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    margin: 0 auto 1rem;
+    color: #dc2626;
+}
+.rfnd-ineligible-card h4 { margin: 0 0 .5rem; font-size: 1rem; font-weight: 700; color: #991b1b; }
+.rfnd-ineligible-card p { font-size: .83rem; line-height: 1.75; margin: 0; color: #7f1d1d; }
+.rfnd-ineligible-card a { color: #dc2626; font-weight: 600; text-decoration: none; }
+.rfnd-ineligible-card a:hover { text-decoration: underline; }
 /* Footer */
 .rfnd-footer {
-    display: flex; justify-content: flex-end; gap: .6rem;
-    padding: .9rem 1.3rem;
-    border-top: 1px solid #e5e7eb;
-    background: #f9fafb;
+    display: flex; align-items: center; justify-content: space-between; gap: .75rem;
+    padding: .85rem 1.35rem;
+    border-top: 1px solid #f1f5f9;
+    background: #f8fafc;
+    flex-wrap: wrap;
 }
+.rfnd-footer-note { font-size: .72rem; color: #94a3b8; margin: 0; flex: 1; min-width: 0; }
+.rfnd-footer-note a { color: #6366f1; text-decoration: none; }
+.rfnd-footer-note a:hover { text-decoration: underline; }
+.rfnd-footer-actions { display: flex; gap: .45rem; align-items: center; }
 .rfnd-btn-cancel {
-    padding: .5rem 1.1rem;
-    border: 1.5px solid var(--border);
+    padding: .44rem 1rem;
+    border: 1.5px solid #e2e8f0;
     border-radius: 8px;
-    background: none;
-    font-size: .84rem;
+    background: #fff;
+    font-size: .81rem;
     font-weight: 600;
     color: var(--text-secondary);
     cursor: pointer;
     font-family: inherit;
     transition: background .15s, border-color .15s;
 }
-.rfnd-btn-cancel:hover { background: var(--bg-primary); border-color: var(--text-muted); }
+.rfnd-btn-cancel:hover { background: #f1f5f9; border-color: #cbd5e1; }
 .rfnd-btn-submit {
     display: flex; align-items: center; gap: .4rem;
-    padding: .5rem 1.3rem;
+    padding: .44rem 1.1rem;
     border: none;
     border-radius: 8px;
-    background: linear-gradient(135deg, #4f46e5, #7c3aed);
+    background: #4f46e5;
     color: #fff;
-    font-size: .84rem;
-    font-weight: 700;
+    font-size: .81rem;
+    font-weight: 600;
     cursor: pointer;
     font-family: inherit;
-    transition: opacity .15s, transform .1s, box-shadow .15s;
-    box-shadow: 0 3px 12px rgba(99,102,241,.35);
+    transition: background .15s, box-shadow .15s, transform .1s;
+    box-shadow: 0 1px 4px rgba(79,70,229,.28), 0 4px 14px rgba(79,70,229,.14);
 }
-.rfnd-btn-submit:hover { opacity: .9; transform: translateY(-1px); box-shadow: 0 5px 18px rgba(99,102,241,.45); }
+.rfnd-btn-submit:hover { background: #4338ca; transform: translateY(-1px); box-shadow: 0 2px 8px rgba(79,70,229,.32), 0 6px 18px rgba(79,70,229,.18); }
 .rfnd-btn-submit:active { transform: translateY(0); }
 </style>
 
