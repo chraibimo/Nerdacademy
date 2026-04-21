@@ -1,4 +1,6 @@
 <?php
+if (!defined('BASE')) define('BASE', '');
+
 require_once __DIR__ . '/includes/auth.php';
 require_once __DIR__ . '/includes/courses-repo.php';
 require_once __DIR__ . '/includes/purchases-repo.php';
