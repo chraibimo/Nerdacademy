@@ -11,9 +11,9 @@ function _env(string $key, string $default = ''): string {
 
 $DB_HOST = _env('DB_HOST', '127.0.0.1');
 $DB_PORT = (int)_env('DB_PORT', '3306');
-$DB_NAME = _env('DB_NAME', 'ai_courses');
-$DB_USER = _env('DB_USER', 'root');
-$DB_PASS = _env('DB_PASS', '');
+$DB_NAME = _env('DB_NAME', 'u423062046_ai_courses');
+$DB_USER = _env('DB_USER', 'u423062046_courses');
+$DB_PASS = _env('DB_PASS', 'Admin1221@@@');
 
 // Connect directly to the named database (shared hosting won't allow CREATE DATABASE).
 $mysqli = new mysqli($DB_HOST, $DB_USER, $DB_PASS, $DB_NAME, $DB_PORT);
