@@ -2,6 +2,19 @@ Options -Indexes
 Options +FollowSymLinks
 RewriteEngine On
 
+# ── Environment variables ────────────────────────────────────────────────────
+# Database — override these on local/shared hosting if not using system env vars
+# SetEnv DB_HOST     127.0.0.1
+# SetEnv DB_PORT     3306
+# SetEnv DB_NAME     ai_courses
+# SetEnv DB_USER     root
+# SetEnv DB_PASS
+
+# Stripe — add your test (sk_test_...) or live (sk_live_...) keys here
+# SetEnv STRIPE_SECRET_KEY      sk_test_YOUR_SECRET_KEY
+# SetEnv STRIPE_PUBLISHABLE_KEY pk_test_YOUR_PUBLISHABLE_KEY
+# SetEnv STRIPE_WEBHOOK_SECRET  whsec_YOUR_WEBHOOK_SECRET
+
 # Clean URL: /checkout/cn  →  /checkout/cn.php  (pass query string through)
 RewriteRule ^checkout/cn$  /checkout/cn.php  [L,QSA]
 

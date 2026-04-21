@@ -63,6 +63,7 @@ if (!$course) {
 }
 
 // — 7. Get or create PaymentIntent
+$stripeError = null;
 if (!empty($order['payment_intent_id']) && !empty($order['payment_intent_secret'])) {
     $clientSecret = (string) $order['payment_intent_secret'];
     $piId         = (string) $order['payment_intent_id'];
@@ -81,14 +82,15 @@ if (!empty($order['payment_intent_id']) && !empty($order['payment_intent_secret'
     try {
         $intent = stripe_create_payment_intent($piParams);
     } catch (RuntimeException $e) {
-        error_log('checkout/cn: PaymentIntent error: ' . $e->getMessage());
-        header('Location: ' . BASE . '/course.php?id=' . $courseId . '&payment_error=1');
-        exit;
+        $stripeError = $e->getMessage();
+        error_log('checkout/index: PaymentIntent error: ' . $stripeError);
     }
 
-    $clientSecret = (string) $intent['client_secret'];
-    $piId         = (string) $intent['id'];
-    attach_payment_intent_to_order($mysqli, $rawOrderId, $piId, $clientSecret);
+    if (!$stripeError) {
+        $clientSecret = (string) $intent['client_secret'];
+        $piId         = (string) $intent['id'];
+        attach_payment_intent_to_order($mysqli, $rawOrderId, $piId, $clientSecret);
+    }
 }
 
 // — 8. Template variables
@@ -864,7 +866,14 @@ $userPhone    = htmlspecialchars((string)($currentUser['phone'] ?? ''), ENT_QUOT
 
     <div class="form-error" id="billing-error"></div>
 
-    <button type="button" class="btn-continue" id="btn-continue">
+    <?php if ($stripeError): ?>
+    <div style="background:#fef2f2;border:1.5px solid #fca5a5;border-radius:10px;padding:14px 16px;margin-bottom:16px;color:#991b1b;font-size:.84rem;line-height:1.55">
+        <strong>Payment setup failed.</strong> Could not initialise Stripe. Please check that your <code>STRIPE_SECRET_KEY</code> is configured correctly.<br>
+        <span style="font-size:.78rem;opacity:.8;margin-top:4px;display:block"><?= htmlspecialchars($stripeError, ENT_QUOTES | ENT_HTML5, 'UTF-8') ?></span>
+    </div>
+    <?php endif; ?>
+
+    <button type="button" class="btn-continue" id="btn-continue" <?= $stripeError ? 'disabled style="opacity:.5;cursor:not-allowed"' : '' ?>>
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
         <rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/>
       </svg>
