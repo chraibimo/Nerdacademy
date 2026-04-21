@@ -562,17 +562,8 @@ async function downloadCert(type) {
       const pdf  = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
       const pdfW = pdf.internal.pageSize.getWidth();
       const pdfH = pdf.internal.pageSize.getHeight();
-      // Fit image inside A4 landscape with 6mm margin
-      const margin = 6;
-      const imgRatio = canvas.width / canvas.height;
-      const maxW = pdfW - margin * 2;
-      const maxH = pdfH - margin * 2;
-      let drawW = maxW;
-      let drawH = drawW / imgRatio;
-      if (drawH > maxH) { drawH = maxH; drawW = drawH * imgRatio; }
-      const x = (pdfW - drawW) / 2;
-      const y = (pdfH - drawH) / 2;
-      pdf.addImage(canvas.toDataURL('image/png', 1.0), 'PNG', x, y, drawW, drawH);
+      // Stretch the certificate image to fill the entire page — no margins
+      pdf.addImage(canvas.toDataURL('image/png', 1.0), 'PNG', 0, 0, pdfW, pdfH);
       pdf.save('nerdacademy-certificate-' + CERT_CODE + '.pdf');
     }
 
