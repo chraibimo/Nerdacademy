@@ -30,17 +30,18 @@ if (function_exists('mysqli_report')) {
 }
 
 set_exception_handler(static function (Throwable $e): void {
-    error_log('[create-checkout-link] Unhandled exception: ' . $e->getMessage());
+    error_log('[create-checkout-link] Unhandled exception: ' . $e->getMessage() . ' at ' . $e->getFile() . ':' . $e->getLine());
     if (!headers_sent()) {
         http_response_code(500);
         header('Content-Type: application/json; charset=utf-8');
     }
-    echo json_encode([
-        'ok' => false,
-        'error' => 'server_error',
-        'detail' => $e->getMessage(),
-        'where' => basename($e->getFile()) . ':' . $e->getLine(),
-    ]);
+    $payload = ['ok' => false, 'error' => 'server_error'];
+    // Allow caller to request diagnostics by sending X-Debug: 1
+    if (($_SERVER['HTTP_X_DEBUG'] ?? '') === '1') {
+        $payload['detail'] = $e->getMessage();
+        $payload['where'] = basename($e->getFile()) . ':' . $e->getLine();
+    }
+    echo json_encode($payload);
     exit;
 });
 
