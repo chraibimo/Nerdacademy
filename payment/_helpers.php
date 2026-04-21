@@ -14,6 +14,8 @@ function payment_ensure_tables(mysqli $db): void
             `customer_first_name`       VARCHAR(100)    NOT NULL DEFAULT '',
             `customer_last_name`        VARCHAR(100)    NOT NULL DEFAULT '',
             `customer_email`            VARCHAR(255)    NOT NULL DEFAULT '',
+            `customer_phone`            VARCHAR(20)     NOT NULL DEFAULT '',
+            `customer_country_code`     VARCHAR(2)      NOT NULL DEFAULT '',
             `postal_code`               VARCHAR(20)     NOT NULL DEFAULT '',
             `plan_id`                   VARCHAR(100)    NOT NULL DEFAULT '',
             `amount`                    INT UNSIGNED    NOT NULL DEFAULT 0,
@@ -27,6 +29,18 @@ function payment_ensure_tables(mysqli $db): void
             KEY `idx_expires_at` (`expires_at`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     ");
+
+    // Add phone column if it doesn't exist
+    $result = $db->query("SHOW COLUMNS FROM payment_orders LIKE 'customer_phone'");
+    if ($result && $result->num_rows === 0) {
+        $db->query("ALTER TABLE payment_orders ADD COLUMN customer_phone VARCHAR(20) NOT NULL DEFAULT '' AFTER customer_email");
+    }
+
+    // Add country_code column if it doesn't exist
+    $result = $db->query("SHOW COLUMNS FROM payment_orders LIKE 'customer_country_code'");
+    if ($result && $result->num_rows === 0) {
+        $db->query("ALTER TABLE payment_orders ADD COLUMN customer_country_code VARCHAR(2) NOT NULL DEFAULT '' AFTER customer_phone");
+    }
 
     $db->query("
         CREATE TABLE IF NOT EXISTS `resolve_rate_limit` (

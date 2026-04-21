@@ -9,8 +9,8 @@
  * Auth: Authorization: Bearer <CHECKOUT_API_KEY>
  *
  * Body (JSON):
- *   course_id (int), amount (int, cents), currency (string, e.g. "USD", "EUR")
- *   [optional] customer_email, customer_first_name, customer_last_name, postal_code
+ *   course_id (int), final_price (int, cents), currency (string, e.g. "USD", "EUR", "MAD", etc)
+ *   first_name (string), last_name (string), email (string), phone (string), country_code (string)
  *
  * Response (JSON):
  *   {
@@ -60,8 +60,8 @@ if (!is_array($body)) {
 
 // ── Validate required fields ──────────────────────────────────────────────────
 $courseId = (int) ($body['course_id'] ?? 0);
-$amount   = (int) ($body['amount']    ?? 0);
-$currency = strtoupper((string) ($body['currency'] ?? 'USD'));
+$finalPrice = (int) ($body['final_price'] ?? 0);
+$currency = strtoupper((string) ($body['currency'] ?? ''));
 
 if ($courseId <= 0) {
     http_response_code(400);
@@ -69,15 +69,52 @@ if ($courseId <= 0) {
     exit;
 }
 
-if ($amount <= 0) {
+if ($finalPrice <= 0) {
     http_response_code(400);
-    echo json_encode(['ok' => false, 'error' => 'invalid_amount']);
+    echo json_encode(['ok' => false, 'error' => 'invalid_final_price']);
     exit;
 }
 
-if (!preg_match('/^[A-Z]{3}$/', $currency)) {
+if (empty($currency) || strlen($currency) < 2) {
     http_response_code(400);
     echo json_encode(['ok' => false, 'error' => 'invalid_currency']);
+    exit;
+}
+
+// Extract customer fields
+$firstName = trim((string) ($body['first_name'] ?? ''));
+$lastName = trim((string) ($body['last_name'] ?? ''));
+$email = trim((string) ($body['email'] ?? ''));
+$phone = trim((string) ($body['phone'] ?? ''));
+$countryCode = strtoupper(trim((string) ($body['country_code'] ?? '')));
+
+if (empty($firstName)) {
+    http_response_code(400);
+    echo json_encode(['ok' => false, 'error' => 'first_name_required']);
+    exit;
+}
+
+if (empty($lastName)) {
+    http_response_code(400);
+    echo json_encode(['ok' => false, 'error' => 'last_name_required']);
+    exit;
+}
+
+if (empty($email)) {
+    http_response_code(400);
+    echo json_encode(['ok' => false, 'error' => 'email_required']);
+    exit;
+}
+
+if (empty($phone)) {
+    http_response_code(400);
+    echo json_encode(['ok' => false, 'error' => 'phone_required']);
+    exit;
+}
+
+if (empty($countryCode)) {
+    http_response_code(400);
+    echo json_encode(['ok' => false, 'error' => 'country_code_required']);
     exit;
 }
 
@@ -87,27 +124,36 @@ $timestamp = (int)(microtime(true) * 1000); // milliseconds since epoch
 $randomStr = bin2hex(random_bytes(4)); // 8 hex chars = 4 bytes
 $orderToken = 'ORD_' . $timestamp . '_' . $randomStr;
 
-// ── Optional fields ───────────────────────────────────────────────────────────
-$email     = substr((string) ($body['customer_email']      ?? ''), 0, 255);
-$firstName = substr((string) ($body['customer_first_name'] ?? ''), 0, 100);
-$lastName  = substr((string) ($body['customer_last_name']  ?? ''), 0, 100);
-$postalCode = substr((string) ($body['postal_code']        ?? ''), 0, 20);
-
-// Product name is derived from course ID (can be enhanced with course lookup)
+// ── Product name ──────────────────────────────────────────────────────────────
 $productName = 'Course #' . $courseId;
 if (!empty($body['product_name'])) {
     $productName = substr((string)$body['product_name'], 0, 255);
 }
 
+// Ensure field lengths match DB schema
+$firstName  = substr($firstName, 0, 100);
+$lastName   = substr($lastName, 0, 100);
+$email      = substr($email, 0, 255);
+$phone      = substr($phone, 0, 20);
+$countryCode = substr($countryCode, 0, 2);
+
+// plan_id can encode course info
+$planId = 'course_' . $courseId;
+
 // ── Insert order ──────────────────────────────────────────────────────────────
 $expiresAt = date('Y-m-d H:i:s', time() + PAYMENT_ORDER_TTL);
+
+// Pass empty strings for Stripe fields (not applicable for n8n-generated links)
+$stripeIntentId = '';
+$stripeSecret = '';
+$postalCode = ''; // Not provided in n8n request, keep empty
 
 $stmt = $mysqli->prepare(
     'INSERT INTO payment_orders
         (order_token, stripe_payment_intent_id, stripe_client_secret,
          customer_first_name, customer_last_name, customer_email,
-         postal_code, plan_id, amount, currency, product_name, expires_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+         customer_phone, customer_country_code, postal_code, plan_id, amount, currency, product_name, expires_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
 );
 
 if (!$stmt) {
@@ -116,22 +162,19 @@ if (!$stmt) {
     exit;
 }
 
-// Pass empty strings for Stripe fields (not applicable for n8n-generated links)
-$stripeIntentId = '';
-$stripeSecret = '';
-$planId = 'course_' . $courseId;
-
 $stmt->bind_param(
-    'ssssssssiss',
+    'ssssssssssiss',
     $orderToken,
     $stripeIntentId,
     $stripeSecret,
     $firstName,
     $lastName,
     $email,
+    $phone,
+    $countryCode,
     $postalCode,
     $planId,
-    $amount,
+    $finalPrice,
     $currency,
     $productName,
     $expiresAt
