@@ -6,6 +6,7 @@ require_once __DIR__ . '/includes/coupons-repo.php';
 require_once __DIR__ . '/includes/reviews-repo.php';
 require_once __DIR__ . '/includes/mailer.php';
 require_once __DIR__ . '/includes/wishlist-repo.php';
+require_once __DIR__ . '/includes/checkout-orders-repo.php';
 
 $id = isset($_GET['id']) ? (int)$_GET['id'] : 1;
 $course = find_course_by_id($mysqli, $id);
@@ -69,96 +70,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['enroll_course_id'])) 
         }
 
         if ($enrollMessage === '') {
-            $stmt = $mysqli->prepare('INSERT INTO purchases (client_id, course_id, original_amount, amount, coupon_code, discount_percent, currency, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
-        } else {
-            $stmt = null;
-        }
-        if (!$stmt) {
-            if ($enrollMessage === '') {
-                $enrollMessage = 'Unable to prepare enrollment request.';
-                $enrollError = true;
-            }
-        } else {
-            $clientId = (int)$currentUser['id'];
-            $courseId = (int)$course['id'];
-            $originalAmount = (float)$course['price'];
-            $amount = round($originalAmount * (1 - ($discountPercent / 100)), 2);
-            $currency = 'USD';
-            $status = 'completed';
-            $stmt->bind_param('iiddsdss', $clientId, $courseId, $originalAmount, $amount, $couponCode, $discountPercent, $currency, $status);
-            if (!$stmt->execute()) {
-                $enrollMessage = 'Unable to complete enrollment. Please try again.';
-                $enrollError = true;
-            } else {
-                if ($couponCode !== '') {
-                    consume_coupon_code($mysqli, $couponCode);
-                }
-                $enrollMessage = 'Enrollment successful. This course is now in My Courses.';
-                $enrollError = false;
-                $isEnrolled = true;
+            // Create a checkout order and redirect to payment page
+            try {
+                $clientId       = (int)$currentUser['id'];
+                $courseId       = (int)$course['id'];
+                $originalAmount = (float)$course['price'];
+                $finalAmount    = round($originalAmount * (1 - ($discountPercent / 100)), 2);
 
-                // Send enrollment confirmation email (silently ignore errors)
-                try {
-                    $playerUrl  = 'http' . (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 's' : '') . '://' . $_SERVER['HTTP_HOST'] . BASE . '/course-player.php?course=' . $courseId;
-                    $safeName   = htmlspecialchars((string) ($currentUser['full_name'] ?? ''));
-                    $safeTitle  = htmlspecialchars((string) $course['title']);
-                    $safeUrl    = htmlspecialchars($playerUrl);
-                    $emailHtml  = <<<HTML
-<!DOCTYPE html>
-<html lang="en">
-<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
-<body style="margin:0;padding:0;background:#eef2ff;font-family:Inter,'Segoe UI',Roboto,Arial,sans-serif;color:#111827">
-  <table width="100%" cellpadding="0" cellspacing="0" style="background:linear-gradient(160deg,#eef2ff 0%,#f8fafc 48%,#e0f2fe 100%);padding:32px 12px">
-    <tr><td align="center">
-      <table width="680" cellpadding="0" cellspacing="0" style="background:#ffffff;border:1px solid #e5e7eb;border-radius:20px;overflow:hidden;max-width:680px;width:100%;box-shadow:0 18px 45px rgba(79,70,229,.14)">
-        <tr><td style="background:linear-gradient(135deg,#4338ca 0%,#6366f1 50%,#8b5cf6 100%);padding:30px 30px 24px;text-align:center;color:#ffffff">
-          <div style="font-size:12px;font-weight:800;letter-spacing:.14em;text-transform:uppercase;opacity:.92">Course Access Unlocked</div>
-          <h1 style="margin:12px 0 8px;font-size:30px;line-height:1.2;font-weight:800">Welcome to {$safeTitle}</h1>
-          <p style="margin:0;font-size:15px;line-height:1.75;color:rgba(255,255,255,.92)">You are officially in — and your next big build can start today.</p>
-        </td></tr>
-        <tr><td style="padding:30px">
-          <p style="color:#111827;font-size:16px;line-height:1.75;margin:0 0 14px">Hi {$safeName},</p>
-          <p style="color:#475569;font-size:15px;line-height:1.85;margin:0 0 18px">Congratulations! Your enrollment in <strong style="color:#312e81">{$safeTitle}</strong> is now live. Jump in whenever you're ready — your progress will be waiting for you.</p>
-          <div style="margin:18px 0;padding:18px;border-radius:16px;border:1px solid #e5e7eb;background:#f8fafc">
-            <div style="font-size:12px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:#4f46e5;margin-bottom:10px">Your next steps</div>
-            <ul style="margin:0;padding-left:18px;color:#334155;font-size:14px;line-height:1.9">
-              <li>Open your course player</li>
-              <li>Complete lessons at your own pace</li>
-              <li>Build practical AI skills through projects</li>
-            </ul>
-          </div>
-          <div style="text-align:center;margin:28px 0">
-            <a href="{$safeUrl}" style="display:inline-block;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;text-decoration:none;padding:15px 34px;border-radius:10px;font-size:16px;font-weight:800">
-              Start Learning
-            </a>
-          </div>
-          <p style="color:#64748b;font-size:13px;line-height:1.8;margin:0;text-align:center">
-            Need help? The NerdAcademy team is here whenever you need a hand.
-          </p>
-        </td></tr>
-        <tr><td style="padding:18px 30px;border-top:1px solid #e5e7eb;text-align:center;background:#fcfcff">
-          <p style="color:#64748b;font-size:12px;margin:0">NerdAcademy · Practical AI learning for ambitious builders</p>
-        </td></tr>
-      </table>
-    </td></tr>
-  </table>
-</body>
-</html>
-HTML;
-                    $emailText  = "Hi {$safeName},\n\nCongratulations — your enrollment in {$safeTitle} is now active.\n\nStart learning here: {$playerUrl}\n\nWelcome to NerdAcademy.";
-                    send_smtp_mail(
-                        (string) ($currentUser['email'] ?? ''),
-                        (string) ($currentUser['full_name'] ?? ''),
-                        'Welcome to ' . $course['title'] . '!',
-                        $emailHtml,
-                        $emailText
-                    );
-                } catch (Throwable $e) {
-                    // Silently ignore mail errors — enrollment already succeeded
-                }
+                $orderId = create_checkout_order(
+                    $mysqli,
+                    $clientId,
+                    $courseId,
+                    $originalAmount,
+                    $finalAmount,
+                    $couponCode,
+                    $discountPercent
+                );
+
+                header('Location: ' . BASE . '/checkout/?order_id=' . $orderId);
+                exit;
+            } catch (Throwable $e) {
+                $enrollMessage = 'Unable to start checkout. Please try again.';
+                $enrollError   = true;
             }
-            $stmt->close();
         }
+
     }
 }
 
