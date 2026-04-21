@@ -17,3 +17,6 @@ Thumbs.db
 # Storage uploads (keep folder structure)
 storage/courses/*
 !storage/courses/.gitkeep
+
+# .htaccess contains secret keys — never commit
+.htaccess
