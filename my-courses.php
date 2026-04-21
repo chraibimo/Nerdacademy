@@ -58,7 +58,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['request_refund']) && 
                  . "Course progress: {$progressPct}%\n\n"
                  . "Reason: $refundReasonCategory\n\n"
                  . "Description:\n$refundDescription";
-        create_support_ticket($mysqli, (int)$user['id'], $subject, 'refund', 'normal', $message);
+        $ticketCreated = create_support_ticket($mysqli, (int)$user['id'], $subject, 'refund', 'high', $message, $refundCourseId);
+        if ($ticketCreated) {
+            // Hide course from list immediately; admin approval will delete it permanently
+            set_purchase_status($mysqli, (int)$user['id'], $refundCourseId, 'refund_pending');
+            // Refresh maps so the page reflects the change
+            $purchasedIds = get_user_enrolled_course_ids($mysqli, (int)$user['id']);
+            $purchaseMap  = get_user_purchases_map($mysqli, (int)$user['id']);
+        }
         $refundSuccess = true;
     } elseif ($purchase && $progressPct >= 25) {
         $refundError = 'Refund is not available once you have completed 25% or more of the course.';
@@ -226,7 +233,58 @@ require_once __DIR__ . '/includes/header.php';
     </div>
 </section>
 
-<!-- Purchase details data for JS -->
+<?php
+// Collect courses currently under refund review
+$refundPendingCourses = [];
+if ($user) {
+    foreach ($purchaseMap as $cid => $p) {
+        if (($p['status'] ?? '') === 'refund_pending') {
+            foreach ($courses as $c) {
+                if ((int)$c['id'] === (int)$cid) {
+                    $refundPendingCourses[] = ['course' => $c, 'purchase' => $p];
+                    break;
+                }
+            }
+        }
+    }
+}
+?>
+<?php if (!empty($refundPendingCourses)): ?>
+<section style="padding:0 0 2.5rem">
+    <div class="container">
+        <div style="display:flex;align-items:center;gap:.6rem;margin-bottom:1rem">
+            <svg width="16" height="16" fill="none" stroke="#f59e0b" stroke-width="2.2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+            <h2 style="font-size:1rem;font-weight:700;color:var(--text-primary)">Refund Under Review</h2>
+        </div>
+        <div class="courses-grid">
+            <?php foreach ($refundPendingCourses as $rp): $rc = $rp['course']; $rpurch = $rp['purchase']; ?>
+            <div class="course-card" style="opacity:.75;position:relative" data-color="<?php echo $rc['color']; ?>">
+                <div style="position:absolute;top:.7rem;right:.7rem;z-index:2;background:#fef3c7;color:#92400e;font-size:.7rem;font-weight:800;padding:.2rem .55rem;border-radius:999px;border:1px solid #fcd34d;letter-spacing:.04em;text-transform:uppercase">Refund Pending</div>
+                <div class="course-card-top" style="--c:<?php echo $rc['color']; ?>">
+                    <?php if (!empty($rc['image_url'])): ?>
+                    <img src="<?php echo htmlspecialchars((string)$rc['image_url']); ?>" alt="<?php echo htmlspecialchars((string)$rc['title']); ?>" style="width:100%;height:100%;object-fit:cover;border-radius:inherit;filter:grayscale(.6)">
+                    <?php else: ?>
+                    <div class="course-icon" style="opacity:.5"><svg width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg></div>
+                    <?php endif; ?>
+                </div>
+                <div class="course-card-body">
+                    <div class="course-meta-top">
+                        <span class="course-cat"><?php echo $rc['category']; ?></span>
+                        <span class="course-level level-<?php echo strtolower($rc['level']); ?>"><?php echo $rc['level']; ?></span>
+                    </div>
+                    <h3 class="course-title"><?php echo $rc['title']; ?></h3>
+                    <p class="course-desc" style="font-size:.82rem;color:var(--text-muted)">Your refund request is under review. Our team will process it within 2–3 business days.</p>
+                    <div style="margin-top:.6rem;padding:.65rem .8rem;background:#fef9ec;border:1px solid #fcd34d;border-radius:8px;font-size:.8rem;color:#78350f">
+                        <strong>Amount:</strong> $<?php echo number_format((float)$rpurch['amount'], 2); ?> <?php echo htmlspecialchars((string)($rpurch['currency'] ?? 'USD')); ?>
+                        &nbsp;·&nbsp; <strong>Submitted:</strong> <?php echo date('M d, Y', strtotime((string)$rpurch['purchased_at'])); ?>
+                    </div>
+                </div>
+            </div>
+            <?php endforeach; ?>
+        </div>
+    </div>
+</section>
+<?php endif; ?>
 <?php if ($user && !empty($purchaseMap)): ?>
 <script>
 var __purchaseData = <?php
@@ -273,50 +331,98 @@ var __purchaseData = <?php
 
 <!-- Refund Modal -->
 <div id="modal-refund" class="mc-modal-overlay" style="display:none" onclick="if(event.target===this)closeModals()">
-    <div class="mc-modal">
-        <div class="mc-modal-header">
-            <h3>Request Refund</h3>
-            <button type="button" onclick="closeModals()" class="mc-modal-close">&times;</button>
-        </div>
+    <div class="mc-modal rfnd-modal">
         <form method="POST" action="">
-            <div class="mc-modal-body">
-                <input type="hidden" name="request_refund" value="1">
-                <input type="hidden" name="course_id" id="refund-course-id" value="">
-                <p id="refund-course-name" style="font-weight:600;margin-bottom:.35rem"></p>
-                <p id="refund-progress-note" style="font-size:.78rem;color:var(--text-muted);margin-bottom:.75rem"></p>
+            <input type="hidden" name="request_refund" value="1">
+            <input type="hidden" name="course_id" id="refund-course-id" value="">
+            <input type="hidden" name="refund_reason_category" id="refund-reason-hidden" value="">
 
-                <div id="refund-eligible" style="display:none">
-                    <p style="font-size:.84rem;color:var(--text-muted);margin-bottom:1rem">
-                        Please select a reason and describe the issue. Our team will review your request within 2–3 business days.
-                        See our <a href="<?php echo BASE; ?>/refund-policy.php" target="_blank" style="color:var(--accent-primary)">refund policy</a>.
-                    </p>
+            <!-- Gradient header -->
+            <div class="rfnd-header">
+                <button type="button" onclick="closeModals()" class="rfnd-close-btn" aria-label="Close">&times;</button>
+                <div class="rfnd-header-icon">
+                    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="3"/><line x1="2" y1="10" x2="22" y2="10"/></svg>
+                </div>
+                <h2 class="rfnd-title">Request a Refund</h2>
+                <p class="rfnd-subtitle" id="rfnd-course-name-header"></p>
+            </div>
 
-                    <label for="refund-reason-category" style="display:block;font-size:.82rem;font-weight:600;margin-bottom:.35rem">Why do you want a refund?</label>
-                    <select name="refund_reason_category" id="refund-reason-category" required style="width:100%;border:1.5px solid var(--border);border-radius:8px;padding:.6rem .75rem;font-size:.88rem;font-family:inherit;background:var(--bg-primary);color:var(--text-primary);margin-bottom:.75rem;cursor:pointer">
-                        <option value="" disabled selected>Select a reason…</option>
-                        <option value="Course not as described">Course not as described</option>
-                        <option value="Content quality issues">Content quality issues</option>
-                        <option value="Technical problems">Technical problems</option>
-                        <option value="Purchased by mistake">Purchased by mistake</option>
-                        <option value="Found a better alternative">Found a better alternative</option>
-                        <option value="Too difficult / Too easy">Too difficult / Too easy</option>
-                        <option value="Other">Other</option>
-                    </select>
-
-                    <label for="refund-description" style="display:block;font-size:.82rem;font-weight:600;margin-bottom:.35rem">Describe your issue</label>
-                    <textarea name="refund_description" id="refund-description" rows="4" required minlength="20" placeholder="Please provide details about your refund request (min. 20 characters)…" style="width:100%;border:1.5px solid var(--border);border-radius:8px;padding:.6rem .75rem;font-size:.88rem;font-family:inherit;resize:vertical;background:var(--bg-primary);color:var(--text-primary)"></textarea>
+            <!-- Body -->
+            <div class="rfnd-body">
+                <!-- Progress strip -->
+                <div class="rfnd-progress-strip">
+                    <span class="rfnd-progress-label">Progress</span>
+                    <div class="rfnd-progress-bar-track">
+                        <div class="rfnd-progress-bar-fill" id="rfnd-progress-fill" style="width:0%"></div>
+                    </div>
+                    <span class="rfnd-progress-pct" id="rfnd-progress-pct">0%</span>
                 </div>
 
+                <!-- Eligible section -->
+                <div id="refund-eligible" style="display:none">
+                    <p class="rfnd-policy-note">
+                        Our team reviews requests within <strong>2–3 business days</strong>.
+                        <a href="<?php echo BASE; ?>/refund-policy.php" target="_blank">Refund policy →</a>
+                    </p>
+
+                    <span class="rfnd-section-label">Why do you want a refund?</span>
+                    <div class="rfnd-reasons-grid">
+                        <button type="button" class="rfnd-reason-card" data-value="Course not as described" onclick="selectReason(this)">
+                            <span class="rfnd-reason-icon">🎯</span>
+                            <span>Not as described</span>
+                        </button>
+                        <button type="button" class="rfnd-reason-card" data-value="Content quality issues" onclick="selectReason(this)">
+                            <span class="rfnd-reason-icon">⭐</span>
+                            <span>Quality issues</span>
+                        </button>
+                        <button type="button" class="rfnd-reason-card" data-value="Technical problems" onclick="selectReason(this)">
+                            <span class="rfnd-reason-icon">🔧</span>
+                            <span>Technical issues</span>
+                        </button>
+                        <button type="button" class="rfnd-reason-card" data-value="Purchased by mistake" onclick="selectReason(this)">
+                            <span class="rfnd-reason-icon">🛒</span>
+                            <span>Wrong purchase</span>
+                        </button>
+                        <button type="button" class="rfnd-reason-card" data-value="Found a better alternative" onclick="selectReason(this)">
+                            <span class="rfnd-reason-icon">🔍</span>
+                            <span>Better alternative</span>
+                        </button>
+                        <button type="button" class="rfnd-reason-card" data-value="Too difficult / Too easy" onclick="selectReason(this)">
+                            <span class="rfnd-reason-icon">📊</span>
+                            <span>Wrong difficulty</span>
+                        </button>
+                        <button type="button" class="rfnd-reason-card rfnd-reason-other" data-value="Other" onclick="selectReason(this)">
+                            <span class="rfnd-reason-icon">💬</span>
+                            <span>Other reason</span>
+                        </button>
+                    </div>
+
+                    <div class="rfnd-desc-wrap">
+                        <label class="rfnd-section-label" for="refund-description">Describe the issue</label>
+                        <textarea name="refund_description" id="refund-description" rows="4" required minlength="20"
+                            placeholder="Share what went wrong — the more detail, the faster we can help (min. 20 characters)…"
+                            class="rfnd-textarea" oninput="updateCharCount(this)"></textarea>
+                        <div class="rfnd-char-counter"><span id="rfnd-char-count">0</span> / 500 characters</div>
+                    </div>
+                </div>
+
+                <!-- Ineligible section -->
                 <div id="refund-ineligible" style="display:none">
-                    <div style="background:#fef2f2;border:1.5px solid #fecaca;border-radius:10px;padding:1rem;color:#991b1b;font-size:.86rem;font-weight:500">
-                        <strong>Refund not available.</strong><br>
-                        You have completed 25% or more of this course. Per our <a href="<?php echo BASE; ?>/refund-policy.php" target="_blank" style="color:var(--indigo,#4f46e5)">refund policy</a>, refunds are only available when course progress is below 25%.
+                    <div class="rfnd-ineligible-card">
+                        <div class="rfnd-ineligible-icon">🚫</div>
+                        <h4>Refund Not Available</h4>
+                        <p>You've completed <strong id="rfnd-ineligible-pct"></strong> of this course. Our <a href="<?php echo BASE; ?>/refund-policy.php" target="_blank">refund policy</a> allows refunds only when progress is below 25%.</p>
                     </div>
                 </div>
             </div>
-            <div class="mc-modal-footer">
-                <button type="button" onclick="closeModals()" class="btn-ghost" style="padding:.45rem 1rem">Cancel</button>
-                <button type="submit" id="refund-submit-btn" class="btn-primary" style="padding:.45rem 1rem">Submit Request</button>
+
+            <!-- Footer -->
+            <div class="rfnd-footer">
+                <button type="button" onclick="closeModals()" class="rfnd-btn-cancel">Cancel</button>
+                <button type="submit" id="refund-submit-btn" class="rfnd-btn-submit">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                    Submit Request
+                </button>
             </div>
         </form>
     </div>
@@ -324,6 +430,7 @@ var __purchaseData = <?php
 
 <!-- Share Modal -->
 <div id="modal-share" class="mc-modal-overlay" style="display:none" onclick="if(event.target===this)closeModals()">
+
     <div class="mc-modal" style="max-width:400px">
         <div class="mc-modal-header">
             <h3>Share Course</h3>
@@ -382,25 +489,46 @@ function showDetails(cid) {
         return '<tr><td style="color:var(--text-muted);font-size:.82rem;padding:.4rem 1rem .4rem 0;white-space:nowrap">' + r[0] + '</td><td style="font-size:.88rem;padding:.4rem 0">' + r[1] + '</td></tr>';
     }).join('') + '</table>';
     document.getElementById('modal-details').style.display = 'flex';
+    document.body.classList.add('modal-open');
 }
 
 function showRefund(cid) {
     var d = (__purchaseData || {})[cid];
     if (!d) return;
-    document.getElementById('refund-course-id').value = cid;
-    document.getElementById('refund-course-name').textContent = d.title;
-    document.getElementById('refund-progress-note').textContent = 'Your progress: ' + d.progress + '%';
+    var pct = d.progress || 0;
 
-    var eligible = d.progress < 25;
+    document.getElementById('refund-course-id').value = cid;
+    document.getElementById('rfnd-course-name-header').textContent = d.title;
+    document.getElementById('rfnd-progress-pct').textContent = pct + '%';
+    document.getElementById('rfnd-progress-fill').style.width = Math.min(pct, 100) + '%';
+    document.getElementById('rfnd-ineligible-pct') && (document.getElementById('rfnd-ineligible-pct').textContent = pct + '%');
+
+    var eligible = pct < 25;
     document.getElementById('refund-eligible').style.display = eligible ? 'block' : 'none';
     document.getElementById('refund-ineligible').style.display = eligible ? 'none' : 'block';
     document.getElementById('refund-submit-btn').style.display = eligible ? '' : 'none';
 
     if (eligible) {
-        document.getElementById('refund-reason-category').selectedIndex = 0;
+        // reset reason cards
+        document.querySelectorAll('.rfnd-reason-card').forEach(function(c){ c.classList.remove('active'); });
+        document.getElementById('refund-reason-hidden').value = '';
         document.getElementById('refund-description').value = '';
+        document.getElementById('rfnd-char-count').textContent = '0';
     }
     document.getElementById('modal-refund').style.display = 'flex';
+    document.body.classList.add('modal-open');
+}
+
+function selectReason(el) {
+    document.querySelectorAll('.rfnd-reason-card').forEach(function(c){ c.classList.remove('active'); });
+    el.classList.add('active');
+    document.getElementById('refund-reason-hidden').value = el.getAttribute('data-value');
+}
+
+function updateCharCount(el) {
+    var count = el.value.length;
+    document.getElementById('rfnd-char-count').textContent = count;
+    if (count > 500) el.value = el.value.substring(0, 500);
 }
 
 function shareCourse(cid) {
@@ -416,6 +544,7 @@ function shareCourse(cid) {
     document.getElementById('share-facebook').href = 'https://www.facebook.com/sharer/sharer.php?u=' + encodeURIComponent(url);
     document.getElementById('share-whatsapp').href = 'https://wa.me/?text=' + encodeURIComponent(text + ' ' + url);
     document.getElementById('modal-share').style.display = 'flex';
+    document.body.classList.add('modal-open');
 }
 
 function copyShareUrl() {
@@ -430,6 +559,7 @@ function closeModals() {
     document.getElementById('modal-details').style.display = 'none';
     document.getElementById('modal-refund').style.display = 'none';
     document.getElementById('modal-share').style.display = 'none';
+    document.body.classList.remove('modal-open');
 }
 document.addEventListener('keydown', function(e){ if(e.key === 'Escape') closeModals(); });
 </script>
@@ -460,30 +590,35 @@ document.addEventListener('keydown', function(e){ if(e.key === 'Escape') closeMo
     opacity: .45;
     cursor: not-allowed !important;
 }
+/* Body blur when any modal is open */
+body.modal-open > *:not(.mc-modal-overlay) { filter: blur(5px); transition: filter .2s; pointer-events: none; }
+
 /* Modal overlay */
 .mc-modal-overlay {
     position: fixed;
     inset: 0;
-    background: rgba(0,0,0,.45);
+    background: rgba(0,0,0,.55);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
     z-index: 9999;
     display: flex;
     align-items: center;
     justify-content: center;
     padding: 1rem;
-    animation: mcFadeIn .15s;
+    animation: mcFadeIn .18s;
 }
 @keyframes mcFadeIn { from { opacity: 0; } to { opacity: 1; } }
 .mc-modal {
-    background: var(--bg-primary);
+    background: #ffffff;
     border-radius: 14px;
-    box-shadow: 0 20px 60px rgba(0,0,0,.2);
+    box-shadow: 0 24px 70px rgba(0,0,0,.22);
     max-width: 480px;
     width: 100%;
     max-height: 90vh;
     overflow-y: auto;
-    animation: mcSlideUp .2s;
+    animation: mcSlideUp .22s;
 }
-@keyframes mcSlideUp { from { transform: translateY(20px); opacity: 0; } }
+@keyframes mcSlideUp { from { transform: translateY(22px); opacity: 0; } }
 .mc-modal-header {
     display: flex;
     align-items: center;
@@ -524,6 +659,168 @@ document.addEventListener('keydown', function(e){ if(e.key === 'Escape') closeMo
     transition: opacity .15s;
 }
 .mc-share-icon:hover { opacity: .85; }
+
+/* ── Refund Modal (unique redesign) ── */
+.rfnd-modal { max-width: 500px; padding: 0; overflow: hidden; border-radius: 18px; }
+.rfnd-header {
+    position: relative;
+    background: linear-gradient(135deg, #4338ca 0%, #6366f1 50%, #8b5cf6 100%);
+    padding: 2rem 1.5rem 1.4rem;
+    text-align: center;
+    color: #fff;
+}
+.rfnd-close-btn {
+    position: absolute;
+    top: .7rem; right: .7rem;
+    background: rgba(255,255,255,.18);
+    border: none;
+    color: #fff;
+    font-size: 1.15rem;
+    line-height: 1;
+    width: 30px; height: 30px;
+    border-radius: 50%;
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: background .15s;
+}
+.rfnd-close-btn:hover { background: rgba(255,255,255,.32); }
+.rfnd-header-icon {
+    background: rgba(255,255,255,.18);
+    border-radius: 50%;
+    width: 54px; height: 54px;
+    display: flex; align-items: center; justify-content: center;
+    margin: 0 auto .8rem;
+    backdrop-filter: blur(4px);
+}
+.rfnd-title { font-size: 1.2rem; font-weight: 800; margin: 0 0 .35rem; letter-spacing: -.01em; }
+.rfnd-subtitle { font-size: .82rem; opacity: .82; margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 340px; display: inline-block; }
+.rfnd-body { padding: 1.2rem 1.3rem; background: #ffffff; }
+/* Progress strip */
+.rfnd-progress-strip {
+    display: flex; align-items: center; gap: .65rem;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: .55rem .9rem;
+    margin-bottom: 1.1rem;
+}
+.rfnd-progress-label { font-size: .75rem; font-weight: 600; color: var(--text-muted); white-space: nowrap; }
+.rfnd-progress-bar-track { flex: 1; height: 6px; background: var(--border); border-radius: 9999px; overflow: hidden; }
+.rfnd-progress-bar-fill { height: 100%; border-radius: 9999px; background: linear-gradient(90deg, #6366f1, #8b5cf6); transition: width .5s ease; }
+.rfnd-progress-pct { font-size: .78rem; font-weight: 700; color: var(--text-primary); white-space: nowrap; }
+/* Policy note */
+.rfnd-policy-note { font-size: .8rem; color: var(--text-muted); margin: 0 0 1rem; line-height: 1.65; }
+.rfnd-policy-note a { color: #6366f1; text-decoration: none; font-weight: 600; }
+.rfnd-policy-note a:hover { text-decoration: underline; }
+/* Section label */
+.rfnd-section-label { display: block; font-size: .72rem; font-weight: 800; color: var(--text-muted); margin-bottom: .55rem; text-transform: uppercase; letter-spacing: .07em; }
+/* Reason grid */
+.rfnd-reasons-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: .45rem;
+    margin-bottom: 1.1rem;
+}
+.rfnd-reason-card {
+    display: flex; flex-direction: column; align-items: center; gap: .28rem;
+    padding: .7rem .4rem .6rem;
+    border: 1.5px solid var(--border);
+    border-radius: 11px;
+    background: var(--bg-secondary);
+    cursor: pointer;
+    font-size: .74rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    font-family: inherit;
+    transition: border-color .15s, background .15s, color .15s, transform .1s, box-shadow .15s;
+    text-align: center;
+    line-height: 1.3;
+}
+.rfnd-reason-card:hover {
+    border-color: #6366f1;
+    background: rgba(99,102,241,.07);
+    color: var(--text-primary);
+    transform: translateY(-1px);
+    box-shadow: 0 3px 12px rgba(99,102,241,.15);
+}
+.rfnd-reason-card.active {
+    border-color: #6366f1;
+    background: rgba(99,102,241,.13);
+    color: #4f46e5;
+    box-shadow: 0 0 0 3px rgba(99,102,241,.15);
+}
+.rfnd-reason-card.active .rfnd-reason-icon { transform: scale(1.18); }
+.rfnd-reason-other { grid-column: span 3; flex-direction: row; gap: .5rem; justify-content: center; padding: .6rem .4rem; }
+.rfnd-reason-icon { font-size: 1.25rem; transition: transform .2s; line-height: 1; }
+/* Textarea */
+.rfnd-desc-wrap { position: relative; }
+.rfnd-textarea {
+    width: 100%;
+    border: 1.5px solid var(--border);
+    border-radius: 11px;
+    padding: .7rem .9rem;
+    font-size: .85rem;
+    font-family: inherit;
+    resize: vertical;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    transition: border-color .2s, box-shadow .2s;
+    min-height: 88px;
+    box-sizing: border-box;
+    line-height: 1.6;
+}
+.rfnd-textarea:focus { outline: none; border-color: #6366f1; box-shadow: 0 0 0 3px rgba(99,102,241,.12); }
+.rfnd-textarea::placeholder { color: var(--text-muted); opacity: .7; }
+.rfnd-char-counter { text-align: right; font-size: .72rem; color: var(--text-muted); margin-top: .3rem; }
+/* Ineligible card */
+.rfnd-ineligible-card {
+    background: linear-gradient(135deg, #fff1f2 0%, #fef2f2 100%);
+    border: 1.5px solid #fecaca;
+    border-radius: 14px;
+    padding: 1.75rem 1.5rem;
+    text-align: center;
+    color: #991b1b;
+}
+.rfnd-ineligible-icon { font-size: 2.6rem; margin-bottom: .6rem; line-height: 1; }
+.rfnd-ineligible-card h4 { margin: 0 0 .5rem; font-size: 1.05rem; font-weight: 800; }
+.rfnd-ineligible-card p { font-size: .84rem; line-height: 1.75; margin: 0; color: #7f1d1d; }
+.rfnd-ineligible-card a { color: #dc2626; font-weight: 600; }
+/* Footer */
+.rfnd-footer {
+    display: flex; justify-content: flex-end; gap: .6rem;
+    padding: .9rem 1.3rem;
+    border-top: 1px solid #e5e7eb;
+    background: #f9fafb;
+}
+.rfnd-btn-cancel {
+    padding: .5rem 1.1rem;
+    border: 1.5px solid var(--border);
+    border-radius: 8px;
+    background: none;
+    font-size: .84rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-family: inherit;
+    transition: background .15s, border-color .15s;
+}
+.rfnd-btn-cancel:hover { background: var(--bg-primary); border-color: var(--text-muted); }
+.rfnd-btn-submit {
+    display: flex; align-items: center; gap: .4rem;
+    padding: .5rem 1.3rem;
+    border: none;
+    border-radius: 8px;
+    background: linear-gradient(135deg, #4f46e5, #7c3aed);
+    color: #fff;
+    font-size: .84rem;
+    font-weight: 700;
+    cursor: pointer;
+    font-family: inherit;
+    transition: opacity .15s, transform .1s, box-shadow .15s;
+    box-shadow: 0 3px 12px rgba(99,102,241,.35);
+}
+.rfnd-btn-submit:hover { opacity: .9; transform: translateY(-1px); box-shadow: 0 5px 18px rgba(99,102,241,.45); }
+.rfnd-btn-submit:active { transform: translateY(0); }
 </style>
 
 <?php require_once __DIR__ . '/includes/footer.php'; ?>

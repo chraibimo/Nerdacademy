@@ -6,6 +6,7 @@ $admin_page_title = 'Support Tickets';
 
 require_once __DIR__ . '/_head.php';
 require_once __DIR__ . '/../includes/support-repo.php';
+require_once __DIR__ . '/../includes/purchases-repo.php';
 
 ensure_support_tickets_table($mysqli);
 
@@ -34,6 +35,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && auth_has_permission($user, 'manage_
             $stmt->bind_param('ssisi', $status, $priority, $assigned, $notes, $ticketId);
             if ($stmt->execute()) {
                 $message = 'Ticket updated.';
+
+                // Refund approval logic — only for refund category tickets
+                $ticketRow = $mysqli->query("SELECT category, course_id, client_id FROM support_tickets WHERE id = " . $ticketId)->fetch_assoc();
+                if ($ticketRow && ($ticketRow['category'] ?? '') === 'refund' && !empty($ticketRow['course_id'])) {
+                    $tClientId = (int)$ticketRow['client_id'];
+                    $tCourseId = (int)$ticketRow['course_id'];
+
+                    if ($status === 'resolved') {
+                        // Approved: permanently remove purchase
+                        delete_purchase($mysqli, $tClientId, $tCourseId);
+                        $message = 'Ticket resolved — purchase removed. Refund approved.';
+                    } elseif ($status === 'closed') {
+                        // Denied: restore access
+                        set_purchase_status($mysqli, $tClientId, $tCourseId, 'completed');
+                        $message = 'Ticket closed — course access restored. Refund denied.';
+                    }
+                }
             } else {
                 $message = 'Unable to update ticket.';
                 $messageType = 'error';
@@ -124,6 +142,9 @@ if ($q) {
         <td>
           <strong>#<?php echo (int)$t['id']; ?> <?php echo htmlspecialchars((string)$t['subject']); ?></strong>
           <div style="font-size:.8rem;color:var(--a-text-muted);max-width:320px"><?php echo htmlspecialchars((string)$t['message']); ?></div>
+          <?php if (!empty($t['course_id'])): ?>
+          <div style="font-size:.75rem;margin-top:.25rem;color:var(--a-text-muted)">Course ID: #<?php echo (int)$t['course_id']; ?></div>
+          <?php endif; ?>
         </td>
         <td>
           <?php echo htmlspecialchars((string)($t['full_name'] ?? 'Unknown')); ?><br>

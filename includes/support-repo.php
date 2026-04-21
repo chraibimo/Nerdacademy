@@ -8,6 +8,7 @@ function ensure_support_tickets_table(mysqli $mysqli): void
     $mysqli->query("CREATE TABLE IF NOT EXISTS support_tickets (
         id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
         client_id BIGINT UNSIGNED NOT NULL,
+        course_id INT NULL,
         subject VARCHAR(190) NOT NULL,
         category VARCHAR(60) NOT NULL DEFAULT 'general',
         priority VARCHAR(20) NOT NULL DEFAULT 'normal',
@@ -22,18 +23,25 @@ function ensure_support_tickets_table(mysqli $mysqli): void
         KEY idx_tickets_status (status),
         KEY idx_tickets_assigned (assigned_to)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+
+    // Add course_id column if it doesn't exist (migration for existing tables)
+    try {
+        $mysqli->query("ALTER TABLE support_tickets ADD COLUMN course_id INT NULL AFTER client_id");
+    } catch (mysqli_sql_exception $e) {
+        if ((int)$e->getCode() !== 1060) throw $e;
+    }
 }
 
-function create_support_ticket(mysqli $mysqli, int $clientId, string $subject, string $category, string $priority, string $message): bool
+function create_support_ticket(mysqli $mysqli, int $clientId, string $subject, string $category, string $priority, string $message, ?int $courseId = null): bool
 {
     ensure_support_tickets_table($mysqli);
 
-    $stmt = $mysqli->prepare('INSERT INTO support_tickets (client_id, subject, category, priority, status, message) VALUES (?, ?, ?, ?, "open", ?)');
+    $stmt = $mysqli->prepare('INSERT INTO support_tickets (client_id, course_id, subject, category, priority, status, message) VALUES (?, ?, ?, ?, ?, "open", ?)');
     if (!$stmt) {
         return false;
     }
 
-    $stmt->bind_param('issss', $clientId, $subject, $category, $priority, $message);
+    $stmt->bind_param('iissss', $clientId, $courseId, $subject, $category, $priority, $message);
     $ok = $stmt->execute();
     $stmt->close();
 

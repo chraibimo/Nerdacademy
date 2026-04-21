@@ -51,7 +51,8 @@ function has_user_enrolled_course(mysqli $mysqli, int $clientId, int $courseId):
 {
     ensure_purchases_table($mysqli);
 
-    $stmt = $mysqli->prepare('SELECT 1 FROM purchases WHERE client_id = ? AND course_id = ? LIMIT 1');
+    // refund_pending counts as not enrolled (hidden from courses list)
+    $stmt = $mysqli->prepare("SELECT 1 FROM purchases WHERE client_id = ? AND course_id = ? AND status != 'refund_pending' LIMIT 1");
     if (!$stmt) {
         return false;
     }
@@ -74,7 +75,7 @@ function get_user_enrolled_course_ids(mysqli $mysqli, int $clientId): array
     ensure_purchases_table($mysqli);
 
     $ids = [];
-    $stmt = $mysqli->prepare('SELECT course_id FROM purchases WHERE client_id = ? ORDER BY purchased_at DESC');
+    $stmt = $mysqli->prepare("SELECT course_id FROM purchases WHERE client_id = ? AND status != 'refund_pending' ORDER BY purchased_at DESC");
     if (!$stmt) {
         return $ids;
     }
@@ -171,4 +172,35 @@ function get_user_purchases_map(mysqli $mysqli, int $clientId): array
     $stmt->close();
 
     return $map;
+}
+
+/**
+ * Update the status of a purchase row.
+ * Useful for: 'completed' | 'refund_pending' | 'refunded'
+ */
+function set_purchase_status(mysqli $mysqli, int $clientId, int $courseId, string $status): bool
+{
+    ensure_purchases_table($mysqli);
+
+    $stmt = $mysqli->prepare('UPDATE purchases SET status = ? WHERE client_id = ? AND course_id = ? LIMIT 1');
+    if (!$stmt) return false;
+    $stmt->bind_param('sii', $status, $clientId, $courseId);
+    $ok = $stmt->execute();
+    $stmt->close();
+    return $ok;
+}
+
+/**
+ * Hard-delete a purchase row (used on approved refund).
+ */
+function delete_purchase(mysqli $mysqli, int $clientId, int $courseId): bool
+{
+    ensure_purchases_table($mysqli);
+
+    $stmt = $mysqli->prepare('DELETE FROM purchases WHERE client_id = ? AND course_id = ? LIMIT 1');
+    if (!$stmt) return false;
+    $stmt->bind_param('ii', $clientId, $courseId);
+    $ok = $stmt->execute();
+    $stmt->close();
+    return $ok;
 }
