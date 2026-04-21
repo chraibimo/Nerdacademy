@@ -29,6 +29,16 @@ if (function_exists('mysqli_report')) {
     mysqli_report(MYSQLI_REPORT_OFF);
 }
 
+set_exception_handler(static function (Throwable $e): void {
+    error_log('[create-checkout-link] Unhandled exception: ' . $e->getMessage());
+    if (!headers_sent()) {
+        http_response_code(500);
+        header('Content-Type: application/json; charset=utf-8');
+    }
+    echo json_encode(['ok' => false, 'error' => 'server_error']);
+    exit;
+});
+
 require_once dirname(__DIR__) . '/includes/db.php';
 require_once dirname(__DIR__) . '/payment/_config.php';
 require_once dirname(__DIR__) . '/payment/_helpers.php';
@@ -57,6 +67,12 @@ if ($token === '' || !hash_equals($apiKey, $token) || $apiKey === '') {
 // ── Parse JSON body ───────────────────────────────────────────────────────────
 $raw  = (string) file_get_contents('php://input');
 $body = json_decode($raw, true);
+
+// n8n can send form-encoded parameters depending on node body mode.
+// Accept both JSON and form payloads to avoid fragile integration failures.
+if (!is_array($body) && !empty($_POST)) {
+    $body = $_POST;
+}
 
 if (!is_array($body)) {
     http_response_code(400);
