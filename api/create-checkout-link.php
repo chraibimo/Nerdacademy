@@ -35,13 +35,13 @@ set_exception_handler(static function (Throwable $e): void {
         http_response_code(500);
         header('Content-Type: application/json; charset=utf-8');
     }
-    $payload = ['ok' => false, 'error' => 'server_error'];
-    // Allow caller to request diagnostics by sending X-Debug: 1
-    if (($_SERVER['HTTP_X_DEBUG'] ?? '') === '1') {
-        $payload['detail'] = $e->getMessage();
-        $payload['where'] = basename($e->getFile()) . ':' . $e->getLine();
-    }
-    echo json_encode($payload);
+    echo json_encode([
+        'ok' => false,
+        'error' => 'server_error',
+        'detail' => $e->getMessage(),
+        'where' => basename($e->getFile()) . ':' . $e->getLine(),
+        'trace' => array_slice(explode("\n", $e->getTraceAsString()), 0, 5),
+    ]);
     exit;
 });
 
