@@ -23,6 +23,12 @@
 header('Content-Type: application/json; charset=utf-8');
 header('X-Content-Type-Options: nosniff');
 
+// Some hosts enable mysqli exceptions globally; keep this endpoint in return-code mode
+// so we can send consistent JSON errors to n8n instead of blank HTTP 500 responses.
+if (function_exists('mysqli_report')) {
+    mysqli_report(MYSQLI_REPORT_OFF);
+}
+
 require_once dirname(__DIR__) . '/includes/db.php';
 require_once dirname(__DIR__) . '/payment/_config.php';
 require_once dirname(__DIR__) . '/payment/_helpers.php';
