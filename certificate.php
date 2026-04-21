@@ -317,12 +317,65 @@ require_once __DIR__ . '/includes/header.php';
 
 /* ── Print styles ────────────────────────────────── */
 @media print {
-  body * { visibility: hidden !important; }
-  #cert-scroll-wrap, #cert-scroll-wrap * { visibility: visible !important; }
-  #cert-scroll-wrap { position: fixed; inset: 0; overflow: visible; }
-  #cert-wrap { box-shadow: none !important; width: 100% !important; min-width: unset !important; }
-  #cert { outline: 8px solid #f5e6c0 !important; }
-  .cert-controls, .cert-locked { display: none !important; }
+  @page {
+    size: A4 landscape;
+    margin: 8mm;
+  }
+
+  /* Hide everything except the certificate */
+  html, body { height: auto !important; overflow: visible !important; background: #fff !important; }
+  body > *:not(.cert-print-root) { display: none !important; }
+
+  /* The section that holds the cert becomes the only visible element */
+  .cert-page {
+    display: block !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+  .cert-page .container {
+    max-width: 100% !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+
+  /* Hide controls and locked state */
+  .cert-controls,
+  .cert-locked,
+  #cert-confetti { display: none !important; }
+
+  /* Scroll wrapper fills the page */
+  #cert-scroll-wrap {
+    overflow: visible !important;
+    width: 100% !important;
+  }
+
+  /* Remove chrome shadow */
+  #cert-wrap {
+    box-shadow: none !important;
+    padding: 0 !important;
+    width: 100% !important;
+    min-width: 0 !important;
+    display: block !important;
+  }
+
+  /* Certificate itself — fit page, preserve colors */
+  #cert {
+    min-height: 0 !important;
+    width: 100% !important;
+    page-break-inside: avoid;
+    break-inside: avoid;
+    outline: 6px solid #f5e6c0 !important;
+    outline-offset: -14px !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    color-adjust: exact !important;
+  }
+
+  /* Force background colors to print */
+  .cert-band {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
 }
 
 @media (max-width: 640px) {
@@ -381,7 +434,7 @@ require_once __DIR__ . '/includes/header.php';
           <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M9 13h6m-6 4h6m-3-8v8"/></svg>
           <span id="btn-dl-pdf-label">Download PDF</span>
         </button>
-        <button class="cert-btn cert-btn--outline" onclick="window.print()">
+        <button class="cert-btn cert-btn--outline" onclick="printCert()">
           <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
           Print
         </button>
@@ -531,6 +584,65 @@ async function downloadCert(type) {
     pngLabel.textContent = 'Download PNG';
     pdfLabel.textContent = 'Download PDF';
   }
+}
+
+function printCert() {
+  const certEl = document.getElementById('cert-wrap');
+  if (!certEl) { window.print(); return; }
+
+  // Collect all <style> tags from the current page that relate to the cert
+  let styles = '';
+  document.querySelectorAll('style').forEach(function(s){ styles += s.outerHTML; });
+
+  // Google Fonts link if present
+  let links = '';
+  document.querySelectorAll('link[rel="stylesheet"]').forEach(function(l){
+    links += l.outerHTML;
+  });
+
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Certificate — NerdAcademy</title>
+  ${links}
+  ${styles}
+  <style>
+    @page { size: A4 landscape; margin: 8mm; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; background: #fff; }
+    #cert-wrap {
+      width: 100%;
+      background: #fffef7;
+      padding: 0;
+      box-shadow: none;
+    }
+    #cert {
+      min-height: 0 !important;
+      -webkit-print-color-adjust: exact !important;
+      print-color-adjust: exact !important;
+      color-adjust: exact !important;
+    }
+    .cert-band {
+      -webkit-print-color-adjust: exact !important;
+      print-color-adjust: exact !important;
+    }
+  </style>
+</head>
+<body>
+  ${certEl.outerHTML}
+  <script>
+    window.onload = function(){ window.print(); window.onafterprint = function(){ window.close(); }; };
+  <\/script>
+</body>
+</html>`;
+
+  const pw = window.open('', '_blank', 'width=1100,height=780');
+  if (!pw) { window.print(); return; }
+  pw.document.open();
+  pw.document.write(html);
+  pw.document.close();
 }
 </script>
 <?php endif; ?>
